@@ -1,0 +1,223 @@
+// Copyright 2026 OpenS3 Contributors
+// SPDX-License-Identifier: Apache-2.0
+syntax = "proto3";
+package opens3;
+
+service ClerkService {
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc Assign(AssignRequest) returns (AssignResponse);
+  rpc LookupVolume(LookupVolumeRequest) returns (LookupVolumeResponse);
+  rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse);
+  rpc SealVolume(SealVolumeRequest) returns (SealVolumeResponse);
+  rpc RegisterEcShards(RegisterEcShardsRequest) returns (RegisterEcShardsResponse);
+  rpc GetClusterInfo(ClusterInfoRequest) returns (ClusterInfoResponse);
+}
+
+service VolumeService {
+  rpc WriteNeedle(WriteNeedleRequest) returns (WriteNeedleResponse);
+  rpc ReadNeedle(ReadNeedleRequest) returns (ReadNeedleResponse);
+  rpc DeleteNeedle(DeleteNeedleRequest) returns (DeleteNeedleResponse);
+  rpc ReplicateNeedle(ReplicateNeedleRequest) returns (ReplicateNeedleResponse);
+  rpc CompactVolume(CompactVolumeRequest) returns (CompactVolumeResponse);
+  rpc EncodeEc(EncodeEcRequest) returns (EncodeEcResponse);
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+message Location {
+  string url = 1;
+  string public_url = 2;
+  int64 data_center = 3;
+  int64 rack = 4;
+  string data_center_name = 5;
+  string rack_name = 6;
+  string node_id = 7;
+}
+
+message VolumeInfo {
+  uint32 id = 1;
+  string collection = 2;
+  string replication = 3;
+  uint64 size = 4;
+  uint64 file_count = 5;
+  uint64 deleted_count = 6;
+  bool read_only = 7;
+  bool sealed = 8;
+  bool ec = 9;
+  repeated Location locations = 10;
+  uint64 ttl_seconds = 11;
+}
+
+message HeartbeatRequest {
+  string node_id = 1;
+  string ip = 2;
+  uint32 port = 3;
+  string public_url = 4;
+  string data_center = 5;
+  string rack = 6;
+  uint64 max_volume_count = 7;
+  uint64 free_disk_bytes = 8;
+  repeated VolumeInfo volumes = 9;
+}
+
+message HeartbeatResponse {
+  repeated uint32 volume_ids_to_create = 1;
+  string leader = 2;
+}
+
+message AssignRequest {
+  string collection = 1;
+  string replication = 2;
+  uint32 count = 3;
+  uint64 ttl_seconds = 4;
+}
+
+message AssignResponse {
+  uint32 volume_id = 1;
+  uint64 file_key = 2;
+  uint32 cookie = 3;
+  string fid = 4;
+  string url = 5;
+  string public_url = 6;
+  uint32 count = 7;
+  repeated Location locations = 8;
+}
+
+message LookupVolumeRequest {
+  uint32 volume_id = 1;
+  string collection = 2;
+}
+
+message LookupVolumeResponse {
+  uint32 volume_id = 1;
+  repeated Location locations = 2;
+  bool ec = 3;
+}
+
+message ListVolumesRequest {
+  string collection = 1;
+}
+
+message ListVolumesResponse {
+  repeated VolumeInfo volumes = 1;
+}
+
+message SealVolumeRequest {
+  uint32 volume_id = 1;
+}
+
+message SealVolumeResponse {
+  bool ok = 1;
+}
+
+message EcShardInfo {
+  uint32 volume_id = 1;
+  uint32 shard_id = 2;
+  string url = 3;
+  bool is_parity = 4;
+}
+
+message RegisterEcShardsRequest {
+  uint32 volume_id = 1;
+  uint32 data_shards = 2;
+  uint32 parity_shards = 3;
+  repeated EcShardInfo shards = 4;
+}
+
+message RegisterEcShardsResponse {
+  bool ok = 1;
+}
+
+message ClusterInfoRequest {}
+
+message ClusterInfoResponse {
+  string leader = 1;
+  repeated string clerks = 2;
+  uint32 volume_server_count = 3;
+  uint32 volume_count = 4;
+  uint64 total_size = 5;
+  uint64 total_files = 6;
+}
+
+message WriteNeedleRequest {
+  uint32 volume_id = 1;
+  uint64 file_key = 2;
+  uint32 cookie = 3;
+  bytes data = 4;
+  uint64 ttl_seconds = 5;
+  bool is_replication = 6;
+  // Other replica volume HTTP URLs; primary sync fan-out.
+  // ReplicateNeedle targets must not fan out again.
+  repeated string replica_urls = 7;
+}
+
+message WriteNeedleResponse {
+  uint32 volume_id = 1;
+  uint64 file_key = 2;
+  uint32 cookie = 3;
+  uint64 size = 4;
+  string etag = 5;
+}
+
+message ReadNeedleRequest {
+  uint32 volume_id = 1;
+  uint64 file_key = 2;
+  uint32 cookie = 3;
+}
+
+message ReadNeedleResponse {
+  bytes data = 1;
+  string etag = 2;
+  uint64 size = 3;
+}
+
+message DeleteNeedleRequest {
+  uint32 volume_id = 1;
+  uint64 file_key = 2;
+  uint32 cookie = 3;
+}
+
+message DeleteNeedleResponse {
+  bool ok = 1;
+}
+
+message ReplicateNeedleRequest {
+  uint32 volume_id = 1;
+  uint64 file_key = 2;
+  uint32 cookie = 3;
+  bytes data = 4;
+  uint64 ttl_seconds = 5;
+}
+
+message ReplicateNeedleResponse {
+  bool ok = 1;
+}
+
+message CompactVolumeRequest {
+  uint32 volume_id = 1;
+}
+
+message CompactVolumeResponse {
+  uint64 before_size = 1;
+  uint64 after_size = 2;
+}
+
+message EncodeEcRequest {
+  uint32 volume_id = 1;
+  uint32 data_shards = 2;
+  uint32 parity_shards = 3;
+  repeated string target_urls = 4;
+}
+
+message EncodeEcResponse {
+  bool ok = 1;
+  repeated EcShardInfo shards = 2;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool ok = 1;
+  string node_id = 2;
+  uint64 free_disk_bytes = 3;
+  uint32 volume_count = 4;
+}

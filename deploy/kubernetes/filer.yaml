@@ -1,0 +1,92 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: opens3-filer
+  namespace: opens3
+  labels:
+    app.kubernetes.io/name: opens3
+    app.kubernetes.io/component: filer
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8888
+      targetPort: 8888
+  selector:
+    app.kubernetes.io/name: opens3
+    app.kubernetes.io/component: filer
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opens3-filer
+  namespace: opens3
+  labels:
+    app.kubernetes.io/name: opens3
+    app.kubernetes.io/component: filer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opens3
+      app.kubernetes.io/component: filer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: opens3
+        app.kubernetes.io/component: filer
+    spec:
+      initContainers:
+        - name: wait-postgres
+          image: postgres:16-alpine
+          command:
+            - sh
+            - -c
+            - until pg_isready -h opens3-postgres -U opens3; do echo waiting; sleep 2; done
+      containers:
+        - name: filer
+          image: opens3:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - filer
+            - --port=8888
+            - --clerk=$(CLERK_URL)
+            - --default-replication=$(DEFAULT_REPLICATION)
+            - --meta-backend=postgres
+          env:
+            - name: CLERK_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: opens3-config
+                  key: CLERK_URL
+            - name: DEFAULT_REPLICATION
+              valueFrom:
+                configMapKeyRef:
+                  name: opens3-config
+                  key: DEFAULT_REPLICATION
+            - name: DATABASE_URL
+              value: postgres://opens3:opens3@opens3-postgres.opens3.svc.cluster.local:5432/opens3
+            - name: RUST_LOG
+              value: info
+          ports:
+            - name: http
+              containerPort: 8888
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi

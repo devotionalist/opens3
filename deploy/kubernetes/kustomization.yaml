@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: opens3
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - secret.yaml
+  - clerk.yaml
+  - volume.yaml
+  - postgres.yaml
+  - filer.yaml
+  - s3.yaml
+  # Uncomment when Ingress controller is available:
+  # - ingress.yaml
+images:
+  - name: opens3
+    newName: opens3
+    newTag: latest
+commonLabels:
+  app.kubernetes.io/part-of: opens3

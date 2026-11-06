@@ -1,0 +1,25 @@
+OpenS3 has been installed as release {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+Components:
+  - Clerk StatefulSet ({{ .Values.clerk.replicas }} replicas, Raft)
+  - Volume StatefulSet ({{ .Values.volume.replicas }} replicas)
+  - Filer Deployment ({{ .Values.filer.replicas }}): S3 + HTTP/WebDAV on one port
+    meta={{ .Values.filer.metaBackend | default "postgres" }}{{ if and (eq (.Values.filer.metaBackend | default "postgres") "postgres") (.Values.filer.postgres.enabled | default false) }} (+ bundled Postgres){{ end }}
+
+Clients (same process / port {{ .Values.filer.port }}):
+  S3 SDK / aws-cli / s3fs / goofys  →  {{ include "opens3.filerService" . }}:{{ .Values.filer.port }}
+  Filer HTTP / curl                  →  {{ include "opens3.filerService" . }}:{{ .Values.filer.port }}/entries/...
+  WebDAV (davfs2 / Cyberduck)        →  {{ include "opens3.filerService" . }}:{{ .Values.filer.port }}/dav
+  Compat DNS                         →  {{ include "opens3.s3Service" . }}:{{ .Values.filer.port }} (ClusterIP alias)
+
+Clerk URL:  {{ include "opens3.clerkUrl" . }}
+Filer URL:  {{ include "opens3.filerUrl" . }}
+
+Port-forward:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "opens3.filerService" . }} 8333:{{ .Values.filer.port }}
+
+  export AWS_ACCESS_KEY_ID='{{ .Values.filer.credentials.accessKey }}'
+  export AWS_SECRET_ACCESS_KEY='(from secret)'
+  aws --endpoint-url http://127.0.0.1:8333 s3 ls
+
+Docs: docs/architecture.md · docs/gateways.md · docs/kubernetes.md

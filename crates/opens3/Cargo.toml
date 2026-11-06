@@ -1,0 +1,25 @@
+[package]
+name = "opens3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenS3 — distributed object storage in Rust"
+
+[[bin]]
+name = "opens3"
+path = "src/main.rs"
+
+[dependencies]
+opens3-common = { workspace = true }
+opens3-clerk = { workspace = true }
+opens3-volume = { workspace = true }
+opens3-filer = { workspace = true }
+opens3-store = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }

@@ -1,0 +1,14 @@
+apiVersion: v2
+name: opens3
+description: OpenS3 — distributed object storage (Clerk / Volume / Filer / S3)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/example/opens3
+keywords:
+  - s3
+  - object-storage
+  - opens3
+maintainers:
+  - name: OpenS3 Contributors
+license: Apache-2.0

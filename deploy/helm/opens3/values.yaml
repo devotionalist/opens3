@@ -1,0 +1,121 @@
+image:
+  repository: opens3
+  tag: latest
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+defaultReplication: "001"
+dataCenter: "dc1"
+rack: "rack1"
+
+clerk:
+  replicas: 3
+  port: 9333
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  podAntiAffinity: true
+
+volume:
+  replicas: 4
+  port: 8080
+  # Capacity ceiling AND auto-precreate target on heartbeat (1 = one data volume per data node).
+  maxVolumes: 1
+  maxVolumeSizeMb: 30720
+  persistence:
+    enabled: true
+    size: 100Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  podAntiAffinity: true
+
+# Unified filer: S3 + HTTP/WebDAV on one process/port. local redb/emptyDir meta not supported in Helm.
+filer:
+  enabled: true
+  replicas: 2
+  port: 8333
+  credentials:
+    accessKey: admin
+    secretKey: change-me-please-use-long-secret
+    # existingSecret: opens3-filer-credentials  # optional override
+  # Shared DB only: postgres | mysql | tidb
+  metaBackend: postgres
+  # External DB URL; empty + postgres.enabled → in-cluster postgres service.
+  databaseUrl: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 1Gi
+  postgres:
+    enabled: true
+    image: postgres:16-alpine
+    user: opens3
+    password: opens3
+    database: opens3
+    persistence:
+      enabled: true
+      size: 10Gi
+      storageClass: ""
+      accessMode: ReadWriteOnce
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi
+  service:
+    type: ClusterIP
+    # nodePort: 30333
+
+ingress:
+  enabled: false
+  className: nginx
+  host: s3.opens3.example.com
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+  tls: []
+  # - secretName: opens3-filer-tls
+  #   hosts:
+  #     - s3.opens3.example.com
+
+serviceMonitor:
+  enabled: false
+  interval: 15s
+  scrapeTimeout: 10s
+  labels: {}
+  # labels:
+  #   release: kube-prometheus-stack
+
+prometheusRule:
+  enabled: false
+  diskLowBytes: 10737418240  # 10Gi
+  labels: {}
+  # labels:
+  #   release: kube-prometheus-stack
+
+grafanaDashboard:
+  enabled: false
+  labels: {}
+  # labels:
+  #   grafana_dashboard: "1"

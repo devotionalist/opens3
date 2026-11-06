@@ -1,0 +1,79 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/opens3",
+    "crates/opens3-common",
+    "crates/opens3-proto",
+    "crates/opens3-clerk",
+    "crates/opens3-volume",
+    "crates/opens3-filer",
+    "crates/opens3-store",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["OpenS3 Contributors"]
+
+[workspace.dependencies]
+opens3-common = { path = "crates/opens3-common" }
+opens3-proto = { path = "crates/opens3-proto" }
+opens3-clerk = { path = "crates/opens3-clerk" }
+opens3-volume = { path = "crates/opens3-volume" }
+opens3-filer = { path = "crates/opens3-filer" }
+opens3-store = { path = "crates/opens3-store" }
+
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["multipart"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http-body-util = "0.1"
+tonic = "0.12"
+prost = "0.13"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_urlencoded = "0.7"
+bytes = "1"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+parking_lot = "0.12"
+dashmap = "6"
+rand = "0.8"
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+md-5 = "0.10"
+url = "2"
+async-trait = "0.1"
+futures = "0.3"
+tokio-stream = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+redb = "2"
+reed-solomon-erasure = "6"
+prometheus = "0.13"
+base64 = "0.22"
+quick-xml = { version = "0.37", features = ["serialize"] }
+aes-gcm = "0.10"
+jsonwebtoken = "9"
+notify = "7"
+walkdir = "2"
+tempfile = "3"
+crc32fast = "1"
+memmap2 = "0.9"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "mysql", "json", "chrono"] }
+axum-server = { version = "0.7.2", features = ["tls-rustls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pemfile = "2"
+openraft = { version = "=0.9.21", features = ["serde", "storage-v2"] }
+
+[profile.release]
+lto = true
+codegen-units = 1

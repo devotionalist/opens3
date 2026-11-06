@@ -1,0 +1,15 @@
+# Local/dev image: copy a prebuilt Linux binary (no compile in Docker).
+# Build binary first, e.g.:
+#   cargo build --release -p opens3
+# On macOS host targeting Colima Linux, prefer:
+#   docker run --rm -v "$PWD":/src -w /src rust:1.85-bookworm \
+#     bash -c 'apt-get update && apt-get install -y protobuf-compiler && cargo build --release -p opens3'
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -r -u 10001 -g root opens3 || true
+COPY target/release/opens3 /usr/local/bin/opens3
+USER 10001
+EXPOSE 9333 8080 8333 8888
+ENTRYPOINT ["/usr/local/bin/opens3"]
+CMD ["--help"]

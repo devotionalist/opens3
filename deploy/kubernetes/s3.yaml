@@ -1,0 +1,100 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: opens3-s3
+  namespace: opens3
+  labels:
+    app.kubernetes.io/name: opens3
+    app.kubernetes.io/component: s3
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8333
+      targetPort: 8333
+  selector:
+    app.kubernetes.io/name: opens3
+    app.kubernetes.io/component: s3
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opens3-s3
+  namespace: opens3
+  labels:
+    app.kubernetes.io/name: opens3
+    app.kubernetes.io/component: s3
+spec:
+  # Stateless via Filer HttpStore — scale freely.
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opens3
+      app.kubernetes.io/component: s3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: opens3
+        app.kubernetes.io/component: s3
+    spec:
+      containers:
+        - name: s3
+          image: opens3:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - s3
+            - --port=8333
+            - --clerk=$(CLERK_URL)
+            - --meta-backend=postgres
+            - --default-replication=$(DEFAULT_REPLICATION)
+          env:
+            - name: CLERK_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: opens3-config
+                  key: CLERK_URL
+            - name: DEFAULT_REPLICATION
+              valueFrom:
+                configMapKeyRef:
+                  name: opens3-config
+                  key: DEFAULT_REPLICATION
+            - name: OPENS3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: opens3-s3-credentials
+                  key: OPENS3_ACCESS_KEY
+            - name: OPENS3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: opens3-s3-credentials
+                  key: OPENS3_SECRET_KEY
+            - name: DATABASE_URL
+              value: postgres://opens3:opens3@opens3-postgres.opens3.svc.cluster.local:5432/opens3
+            - name: OPENS3_FILER_URL
+              value: http://opens3-filer.opens3.svc.cluster.local:8888
+            - name: OPENS3_FILER_PORT
+              value: "8888"
+            - name: RUST_LOG
+              value: info
+          ports:
+            - name: http
+              containerPort: 8333
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi

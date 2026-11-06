@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+.idea/
+.vscode/
+data/
+filer/
+*.redb
+.DS_Store
+/tmp

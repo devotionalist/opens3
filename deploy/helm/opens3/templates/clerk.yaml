@@ -1,0 +1,134 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "opens3.clerkHeadless" . }}
+  labels:
+    {{- include "opens3.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clerk
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: http
+      port: {{ .Values.clerk.port }}
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: {{ include "opens3.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: clerk
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "opens3.clerkService" . }}
+  labels:
+    {{- include "opens3.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clerk
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.clerk.port }}
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: {{ include "opens3.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: clerk
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "opens3.fullname" . }}-clerk
+  labels:
+    {{- include "opens3.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clerk
+spec:
+  serviceName: {{ include "opens3.clerkHeadless" . }}
+  replicas: {{ .Values.clerk.replicas }}
+  # Parallel so a 3-voter Raft can form quorum on cold start (OrderedReady deadlocks: leader needs peers).
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "opens3.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: clerk
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "opens3.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: clerk
+    spec:
+      {{- if .Values.clerk.podAntiAffinity }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/component: clerk
+                    app.kubernetes.io/instance: {{ .Release.Name }}
+                topologyKey: kubernetes.io/hostname
+      {{- end }}
+      containers:
+        - name: clerk
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - clerk
+            - --port={{ .Values.clerk.port }}
+            - --ip=$(POD_NAME)
+            - --advertise-url=http://$(POD_NAME).{{ include "opens3.clerkHeadless" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.clerk.port }}
+            - --peers={{ include "opens3.clerkPeers" . }}
+            - --default-replication={{ .Values.defaultReplication }}
+            - --raft-dir=/data/raft
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: RUST_LOG
+              value: info
+          ports:
+            - name: http
+              containerPort: {{ .Values.clerk.port }}
+          volumeMounts:
+            - name: raft
+              mountPath: /data/raft
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.clerk.resources | nindent 12 }}
+      {{- if not .Values.clerk.persistence.enabled }}
+      volumes:
+        - name: raft
+          emptyDir: {}
+      {{- end }}
+  {{- if .Values.clerk.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: raft
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.clerk.persistence.storageClass }}
+        storageClassName: {{ .Values.clerk.persistence.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.clerk.persistence.size }}
+  {{- end }}

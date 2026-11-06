@@ -1,0 +1,115 @@
+# PrometheusRule / alertmanager rule examples for OpenS3
+groups:
+  - name: opens3
+    rules:
+      - alert: OpenS3ClerkNoLeader
+        expr: max(opens3_clerk_is_leader) == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "OpenS3 has no Raft leader"
+          description: "No clerk reports opens3_clerk_is_leader=1 for 2m."
+
+      - alert: OpenS3UnderReplicatedVolumes
+        expr: sum(opens3_clerk_under_replicated_volumes) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "OpenS3 volumes under-replicated"
+          description: "{{ $value }} volumes have fewer replicas than configured."
+
+      - alert: OpenS3VolumeHeartbeatFail
+        expr: opens3_volume_heartbeat_fail == 1
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Volume server cannot heartbeat to clerk"
+          description: "A volume pod lost clerk connectivity."
+
+      - alert: OpenS3VolumeDiskLow
+        expr: opens3_volume_free_disk_bytes < 10737418240
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Volume free disk low"
+          description: "Free disk {{ $value | humanize1024 }}B on volume data dir (<10Gi)."
+
+      - alert: OpenS3VolumeNearCapacity
+        expr: |
+          opens3_volume_count / clamp_min(opens3_volume_max_volumes, 1) > 0.9
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Volume server near max volume count"
+          description: "Local volume count exceeds 90% of configured max."
+
+      - alert: OpenS3AssignErrors
+        expr: |
+          sum(rate(opens3_clerk_assign_total{result="error"}[5m]))
+            /
+          clamp_min(sum(rate(opens3_clerk_assign_total[5m])), 1) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High Clerk assign error rate"
+          description: "More than 10% of assign requests are failing."
+
+      - alert: OpenS3S3HighErrorRate
+        expr: |
+          sum(rate(opens3_s3_errors_total[5m]))
+            /
+          clamp_min(sum(rate(opens3_s3_requests_total[5m])), 1) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "OpenS3 S3 error rate > 5%"
+          description: "Elevated S3 API errors over 5 minutes."
+
+      - alert: OpenS3S3AuthFailures
+        expr: sum(rate(opens3_s3_auth_fail_total[5m])) > 1
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "OpenS3 authentication failures"
+          description: "Possible misconfigured clients or credential attacks."
+
+      - alert: OpenS3S3HighLatency
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le) (rate(opens3_s3_request_duration_seconds_bucket[5m]))
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "OpenS3 S3 p99 latency > 2s"
+          description: "Check volume disk IO, network, and clerk assign latency."
+
+      - alert: OpenS3ReplicateFailures
+        expr: sum(rate(opens3_volume_replicate_total{result="error"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Needle replication failures"
+          description: "Volume servers are failing to replicate needles to peers."
+
+      - alert: OpenS3FilerErrors
+        expr: |
+          sum(rate(opens3_filer_ops_total{result="error"}[5m]))
+            /
+          clamp_min(sum(rate(opens3_filer_ops_total[5m])), 1) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Filer error rate > 5%"
+          description: "Elevated filer put/get/delete failures."

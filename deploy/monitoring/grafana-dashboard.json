@@ -1,0 +1,257 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Clerk leader",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "max(opens3_clerk_is_leader)", "legendFormat": "leader" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "NONE", "color": "red" }, "1": { "text": "OK", "color": "green" } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        }
+      }
+    },
+    {
+      "title": "Raft term / commit",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "targets": [
+        { "expr": "max(opens3_clerk_raft_term)", "legendFormat": "term" },
+        { "expr": "max(opens3_clerk_raft_commit_index)", "legendFormat": "commit" }
+      ]
+    },
+    {
+      "title": "Under-replicated",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "targets": [
+        { "expr": "sum(opens3_clerk_under_replicated_volumes)", "legendFormat": "under-replicated" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Cluster capacity",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "sum(opens3_clerk_volumes)", "legendFormat": "volumes" },
+        { "expr": "sum(opens3_clerk_volume_servers)", "legendFormat": "volume servers" },
+        { "expr": "sum(opens3_clerk_total_size_bytes)", "legendFormat": "bytes" },
+        { "expr": "sum(opens3_clerk_total_files)", "legendFormat": "files" }
+      ]
+    },
+    {
+      "title": "S3 QPS by action",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        {
+          "expr": "sum by (action) (rate(opens3_s3_requests_total[1m]))",
+          "legendFormat": "{{action}}"
+        }
+      ]
+    },
+    {
+      "title": "S3 latency p50 / p99",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(opens3_s3_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, action) (rate(opens3_s3_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "p99 {{action}}"
+        }
+      ]
+    },
+    {
+      "title": "S3 errors / auth",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 12 },
+      "targets": [
+        {
+          "expr": "sum by (code) (rate(opens3_s3_errors_total[1m]))",
+          "legendFormat": "{{code}}"
+        },
+        {
+          "expr": "sum by (reason) (rate(opens3_s3_auth_fail_total[1m]))",
+          "legendFormat": "auth {{reason}}"
+        }
+      ]
+    },
+    {
+      "title": "S3 in-flight / multipart",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 12 },
+      "targets": [
+        { "expr": "opens3_s3_requests_in_flight", "legendFormat": "in_flight" },
+        { "expr": "opens3_s3_multipart_uploads", "legendFormat": "multipart" }
+      ]
+    },
+    {
+      "title": "S3 bytes in/out",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 12 },
+      "targets": [
+        {
+          "expr": "sum by (direction) (rate(opens3_s3_request_bytes_total[1m]))",
+          "legendFormat": "{{direction}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "Bps" } }
+    },
+    {
+      "title": "Volume needle ops",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },
+      "targets": [
+        {
+          "expr": "sum by (op, result) (rate(opens3_volume_needle_ops_total[1m]))",
+          "legendFormat": "{{op}} {{result}}"
+        }
+      ]
+    },
+    {
+      "title": "Volume throughput bytes",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },
+      "targets": [
+        {
+          "expr": "sum by (op) (rate(opens3_volume_needle_bytes_total[1m]))",
+          "legendFormat": "{{op}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "Bps" } }
+    },
+    {
+      "title": "Volume free disk",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 27 },
+      "targets": [
+        { "expr": "opens3_volume_free_disk_bytes", "legendFormat": "{{instance}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" } }
+    },
+    {
+      "title": "Volume fill ratio",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 27 },
+      "targets": [
+        {
+          "expr": "opens3_volume_count / clamp_min(opens3_volume_max_volumes, 1)",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "max": 1 } }
+    },
+    {
+      "title": "Volume heartbeat / replicate",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 27 },
+      "targets": [
+        { "expr": "opens3_volume_heartbeat_fail", "legendFormat": "hb_fail {{instance}}" },
+        {
+          "expr": "sum by (result) (rate(opens3_volume_replicate_total[1m]))",
+          "legendFormat": "replicate {{result}}"
+        }
+      ]
+    },
+    {
+      "title": "Assign / Lookup / Heartbeat",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 33 },
+      "targets": [
+        {
+          "expr": "sum by (result) (rate(opens3_clerk_assign_total[1m]))",
+          "legendFormat": "assign {{result}}"
+        },
+        {
+          "expr": "sum by (result) (rate(opens3_clerk_lookup_total[1m]))",
+          "legendFormat": "lookup {{result}}"
+        },
+        {
+          "expr": "sum by (result) (rate(opens3_clerk_heartbeat_total[1m]))",
+          "legendFormat": "hb {{result}}"
+        }
+      ]
+    },
+    {
+      "title": "Heal / Balance",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 33 },
+      "targets": [
+        { "expr": "opens3_clerk_heal_tasks", "legendFormat": "heal tasks" },
+        { "expr": "opens3_clerk_balance_moves", "legendFormat": "balance moves" },
+        {
+          "expr": "sum by (result) (rate(opens3_clerk_heal_runs_total[1m]))",
+          "legendFormat": "heal run {{result}}"
+        },
+        {
+          "expr": "sum by (result) (rate(opens3_clerk_balance_runs_total[1m]))",
+          "legendFormat": "balance run {{result}}"
+        }
+      ]
+    },
+    {
+      "title": "Filer ops",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 33 },
+      "targets": [
+        {
+          "expr": "sum by (op, result) (rate(opens3_filer_ops_total[1m]))",
+          "legendFormat": "{{op}} {{result}}"
+        },
+        { "expr": "opens3_filer_requests_in_flight", "legendFormat": "in_flight" }
+      ]
+    },
+    {
+      "title": "Clerk / Volume / S3 latency",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 39 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, op) (rate(opens3_clerk_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "clerk {{op}}"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, op) (rate(opens3_volume_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "volume {{op}}"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, op) (rate(opens3_filer_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "filer {{op}}"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["opens3", "object-storage"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "title": "OpenS3",
+  "uid": "opens3-overview",
+  "version": 2
+}

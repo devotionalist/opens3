@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opens3-config
+  namespace: opens3
+  labels:
+    app.kubernetes.io/name: opens3
+data:
+  DEFAULT_REPLICATION: "001"
+  # Clerk peer list (headless DNS). Adjust replica count / release name if customized.
+  CLERK_PEERS: "http://opens3-clerk-0.opens3-clerk-hl.opens3.svc.cluster.local:9333,http://opens3-clerk-1.opens3-clerk-hl.opens3.svc.cluster.local:9333,http://opens3-clerk-2.opens3-clerk-hl.opens3.svc.cluster.local:9333"
+  CLERK_URL: "http://opens3-clerk.opens3.svc.cluster.local:9333"
+  DATA_CENTER: "dc1"
+  RACK: "rack1"
+  MAX_VOLUMES: "32"
+  MAX_VOLUME_SIZE_MB: "30720"
+  IMAGE: "opens3:latest"

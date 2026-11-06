@@ -1,0 +1,27 @@
+# Optional Ingress for S3 API / Admin UI.
+# Requires an Ingress controller (nginx, traefik, etc.).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: opens3-s3
+  namespace: opens3
+  labels:
+    app.kubernetes.io/name: opens3
+    app.kubernetes.io/component: s3
+  annotations:
+    # Preserve signature headers; do not rewrite body
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: s3.opens3.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: opens3-s3
+                port:
+                  number: 8333

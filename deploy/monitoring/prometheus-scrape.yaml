@@ -1,0 +1,53 @@
+# Example Prometheus scrape configs (add under scrape_configs:)
+# Adjust targets for your environment.
+
+scrape_configs:
+  - job_name: opens3-clerk
+    metrics_path: /metrics
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    static_configs:
+      - targets:
+          - opens3-clerk.opens3.svc.cluster.local:9333
+        labels:
+          component: clerk
+
+  - job_name: opens3-volume
+    metrics_path: /metrics
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [opens3]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+        action: keep
+        regex: volume
+      - source_labels: [__meta_kubernetes_pod_ip]
+        target_label: __address__
+        replacement: $1:8080
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+
+  - job_name: opens3-s3
+    metrics_path: /metrics
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    static_configs:
+      - targets:
+          - opens3-s3.opens3.svc.cluster.local:8333
+        labels:
+          component: s3
+
+  - job_name: opens3-filer
+    metrics_path: /metrics
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    static_configs:
+      - targets:
+          - opens3-filer.opens3.svc.cluster.local:8888
+        labels:
+          component: filer

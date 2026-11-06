@@ -1,0 +1,36 @@
+[package]
+name = "opens3-volume"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+opens3-common = { workspace = true }
+opens3-proto = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tonic = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+dashmap = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+crc32fast = { workspace = true }
+memmap2 = { workspace = true }
+reed-solomon-erasure = { workspace = true }
+md-5 = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+uuid = { workspace = true }
+base64 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1,0 +1,15 @@
+{{- if .Values.grafanaDashboard.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "opens3.fullname" . }}-grafana-dashboard
+  labels:
+    {{- include "opens3.labels" . | nindent 4 }}
+    grafana_dashboard: "1"
+    {{- with .Values.grafanaDashboard.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+data:
+  opens3-overview.json: |-
+{{ .Files.Get "dashboards/opens3-overview.json" | indent 4 }}
+{{- end }}

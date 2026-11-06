@@ -1,0 +1,55 @@
+# Lightweight overrides for kind / minikube / Colima / local clusters
+# Usage:
+#   docker build -t opens3:0.1.0 .
+#   # Colima k3s: docker save opens3:0.1.0 | colima ssh -- sudo k3s ctr images import -
+#   helm upgrade --install opens3 deploy/helm/opens3 -n opens3 --create-namespace \
+#     -f deploy/helm/opens3/values-dev.yaml
+image:
+  repository: opens3
+  tag: "0.1.0"
+  pullPolicy: Never
+
+defaultReplication: "000"
+
+clerk:
+  replicas: 3
+  # Raft MUST survive pod restart; emptyDir caused repeated split-brain / Ready 0/1.
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: ""
+  podAntiAffinity: false
+  # Colima/local: clerk was still OOMKilled (137) at 1Gi during Raft bootstrap.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+
+volume:
+  replicas: 2
+  # One data volume per data node by default; raise to precreate a pool.
+  maxVolumes: 1
+  maxVolumeSizeMb: 1024
+  persistence:
+    enabled: false
+  podAntiAffinity: false
+
+filer:
+  enabled: true
+  replicas: 2
+  port: 8333
+  credentials:
+    accessKey: admin
+    secretKey: devsecretdevsecret
+  metaBackend: postgres
+  postgres:
+    enabled: true
+    persistence:
+      enabled: true
+      size: 1Gi
+  service:
+    type: NodePort
+    nodePort: 30333

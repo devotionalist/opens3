@@ -1,0 +1,43 @@
+[package]
+name = "opens3-filer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenS3 gateway — Filer HTTP/WebDAV + S3 API"
+
+[dependencies]
+opens3-common = { workspace = true }
+opens3-store = { workspace = true }
+opens3-proto = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tonic = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_urlencoded = { workspace = true }
+bytes = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
+dashmap = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+md-5 = { workspace = true }
+hex = { workspace = true }
+aes-gcm = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+rand = { workspace = true }
+parking_lot = { workspace = true }
+quick-xml = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+axum = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }

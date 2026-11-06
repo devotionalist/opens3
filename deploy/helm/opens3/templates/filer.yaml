@@ -1,0 +1,163 @@
+{{- /* Unified filer: one process = S3 + HTTP/WebDAV on a single port. */ -}}
+{{- $secretName := .Values.filer.credentials.existingSecret | default (printf "%s-filer-credentials" (include "opens3.fullname" .)) -}}
+{{- $metaBackend := .Values.filer.metaBackend | default "postgres" -}}
+{{- if not (or (eq $metaBackend "postgres") (eq $metaBackend "mysql") (eq $metaBackend "tidb")) -}}
+{{- fail (printf "metaBackend=%q is not allowed: use postgres, mysql, or tidb" $metaBackend) -}}
+{{- end -}}
+{{- $dbUrl := include "opens3.filerDatabaseUrl" . -}}
+{{- if eq $dbUrl "" -}}
+{{- fail "Filer requires shared meta DATABASE_URL (filer.databaseUrl or filer.postgres.enabled=true)" -}}
+{{- end -}}
+{{- $port := int (.Values.filer.port | default 8333) -}}
+{{- $replicas := int (.Values.filer.replicas | default 2) -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "opens3.filerService" . }}
+  labels:
+    {{- include "opens3.labels" . | nindent 4 }}
+    app.kubernetes.io/component: filer
+spec:
+  type: {{ .Values.filer.service.type | default "ClusterIP" }}
+  ports:
+    - name: http
+      port: {{ $port }}
+      targetPort: http
+      {{- if and (eq (.Values.filer.service.type | default "ClusterIP") "NodePort") .Values.filer.service.nodePort }}
+      nodePort: {{ .Values.filer.service.nodePort }}
+      {{- end }}
+  selector:
+    app.kubernetes.io/name: {{ include "opens3.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: filer
+---
+{{- /* DNS alias for older clients that still dial opens3-s3. */ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "opens3.s3Service" . }}
+  labels:
+    {{- include "opens3.labels" . | nindent 4 }}
+    app.kubernetes.io/component: filer
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ $port }}
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: {{ include "opens3.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: filer
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "opens3.fullname" . }}-filer
+  labels:
+    {{- include "opens3.labels" . | nindent 4 }}
+    app.kubernetes.io/component: filer
+spec:
+  replicas: {{ $replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "opens3.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: filer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "opens3.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: filer
+    spec:
+      serviceAccountName: {{ include "opens3.fullname" . }}-filer
+      {{- if and (eq $metaBackend "postgres") (.Values.filer.postgres.enabled | default false) }}
+      initContainers:
+        - name: wait-postgres
+          image: {{ .Values.filer.postgres.image | default "postgres:16-alpine" | quote }}
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h {{ include "opens3.postgresService" . }} -U {{ .Values.filer.postgres.user | default "opens3" }}; do
+                echo waiting for postgres; sleep 2;
+              done
+      {{- end }}
+      containers:
+        - name: filer
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - s3
+            - --port={{ $port }}
+            - --clerk={{ include "opens3.clerkUrl" . }}
+            - --default-replication={{ .Values.defaultReplication }}
+            - --meta-backend={{ $metaBackend }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: OPENS3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: OPENS3_ACCESS_KEY
+            - name: OPENS3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: OPENS3_SECRET_KEY
+            - name: DATABASE_URL
+              value: {{ $dbUrl | quote }}
+            - name: OPENS3_META_BACKEND
+              value: {{ $metaBackend | quote }}
+            - name: OPENS3_K8S_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: OPENS3_HELM_RELEASE
+              value: {{ include "opens3.fullname" . | quote }}
+            - name: OPENS3_CLERK_HEADLESS
+              value: {{ include "opens3.clerkHeadless" . | quote }}
+            - name: OPENS3_CLERK_PORT
+              value: {{ .Values.clerk.port | quote }}
+            - name: OPENS3_CLERK_REPLICAS
+              value: {{ .Values.clerk.replicas | quote }}
+            - name: OPENS3_VOLUME_HEADLESS
+              value: {{ include "opens3.volumeHeadless" . | quote }}
+            - name: OPENS3_VOLUME_PORT
+              value: {{ .Values.volume.port | default 8080 | quote }}
+            - name: OPENS3_VOLUME_REPLICAS
+              value: {{ .Values.volume.replicas | quote }}
+            - name: OPENS3_S3_PORT
+              value: {{ $port | quote }}
+            - name: OPENS3_S3_REPLICAS
+              value: {{ $replicas | quote }}
+            - name: OPENS3_FILER_PORT
+              value: {{ $port | quote }}
+            - name: OPENS3_FILER_URL
+              value: {{ printf "http://%s.%s.svc.cluster.local:%d" (include "opens3.filerService" .) .Release.Namespace $port | quote }}
+            - name: RUST_LOG
+              value: info
+          ports:
+            - name: http
+              containerPort: {{ $port }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.filer.resources | nindent 12 }}

@@ -1,0 +1,2566 @@
+<!DOCTYPE html>
+<!-- Copyright 2026 OpenS3 Contributors -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OpenS3 文件管理</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0c1210;
+      --bg2: #121a17;
+      --panel: #16201c;
+      --panel2: #1c2924;
+      --text: #e8f0ec;
+      --muted: #8aa396;
+      --accent: #5ee0a0;
+      --accent-dim: #2a8f5c;
+      --danger: #f07178;
+      --warn: #e6c07b;
+      --line: #2a3b34;
+      --hover: #1e2e28;
+      --radius: 10px;
+      --font: "DM Sans", system-ui, sans-serif;
+      --mono: "JetBrains Mono", ui-monospace, monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: var(--font);
+      background:
+        radial-gradient(900px 480px at 0% 0%, #143528 0%, transparent 55%),
+        radial-gradient(700px 400px at 100% 100%, #0f1f2a 0%, transparent 50%),
+        var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+    }
+    header.app {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 0.85rem 1.25rem;
+      border-bottom: 1px solid var(--line);
+      background: color-mix(in srgb, var(--bg2) 85%, transparent);
+      backdrop-filter: blur(8px);
+    }
+    .brand {
+      display: flex;
+      align-items: baseline;
+      gap: 0.65rem;
+    }
+    .brand h1 {
+      margin: 0;
+      font-size: 1.2rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .brand span {
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    .tabs {
+      display: flex;
+      gap: 0.35rem;
+    }
+    .tabs button {
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-weight: 500;
+      padding: 0.4rem 0.85rem;
+      border-radius: 999px;
+      cursor: pointer;
+    }
+    .tabs button.active {
+      color: var(--text);
+      background: var(--panel2);
+      border-color: var(--line);
+    }
+    .status-pill {
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      color: var(--accent);
+      border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+      padding: 0.3rem 0.65rem;
+      border-radius: 999px;
+    }
+    .layout {
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 260px 1fr;
+    }
+    aside {
+      border-right: 1px solid var(--line);
+      background: var(--bg2);
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    .aside-head {
+      padding: 0.9rem 1rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--line);
+    }
+    .aside-head h2 {
+      margin: 0;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+    .bucket-list {
+      overflow: auto;
+      padding: 0.5rem;
+      flex: 1;
+    }
+    .bucket-item {
+      width: 100%;
+      text-align: left;
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      font: inherit;
+      padding: 0.65rem 0.75rem;
+      border-radius: 8px;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .bucket-item:hover { background: var(--hover); }
+    .bucket-item.active {
+      background: color-mix(in srgb, var(--accent) 14%, var(--panel));
+      color: var(--accent);
+    }
+    .bucket-item .name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 500;
+    }
+    .workspace {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      align-items: center;
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--line);
+      background: color-mix(in srgb, var(--panel) 60%, transparent);
+    }
+    .crumb {
+      flex: 1;
+      min-width: 160px;
+      font-family: var(--mono);
+      font-size: 0.82rem;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .crumb b { color: var(--text); font-weight: 500; }
+    .crumb a {
+      color: var(--accent);
+      text-decoration: none;
+      cursor: pointer;
+    }
+    button.btn, label.btn {
+      border: 1px solid var(--line);
+      background: var(--panel2);
+      color: var(--text);
+      font: inherit;
+      font-size: 0.85rem;
+      font-weight: 500;
+      padding: 0.45rem 0.8rem;
+      border-radius: 8px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+    button.btn:hover, label.btn:hover { border-color: var(--accent-dim); }
+    button.btn.primary {
+      background: color-mix(in srgb, var(--accent) 22%, var(--panel2));
+      border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+      color: #d8ffe9;
+    }
+    button.btn.danger {
+      color: var(--danger);
+      border-color: color-mix(in srgb, var(--danger) 40%, var(--line));
+    }
+    button.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    input[type="file"] { display: none; }
+    .table-wrap {
+      flex: 1;
+      overflow: auto;
+      padding: 0.5rem 1rem 1.5rem;
+    }
+    table.files {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.92rem;
+    }
+    table.files th {
+      text-align: left;
+      color: var(--muted);
+      font-weight: 500;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 0.75rem 0.6rem;
+      border-bottom: 1px solid var(--line);
+      position: sticky;
+      top: 0;
+      background: var(--bg);
+    }
+    table.files td {
+      padding: 0.7rem 0.6rem;
+      border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+      vertical-align: middle;
+    }
+    table.files tr:hover td { background: var(--hover); }
+    .name-cell {
+      display: flex;
+      align-items: center;
+      gap: 0.55rem;
+      min-width: 0;
+    }
+    .icon {
+      width: 1.6rem;
+      height: 1.6rem;
+      border-radius: 6px;
+      display: grid;
+      place-items: center;
+      font-size: 0.75rem;
+      flex-shrink: 0;
+      background: var(--panel2);
+      border: 1px solid var(--line);
+    }
+    .icon.folder { color: var(--warn); }
+    .icon.file { color: var(--accent); }
+    .linkish {
+      background: none;
+      border: 0;
+      color: inherit;
+      font: inherit;
+      font-weight: 500;
+      cursor: pointer;
+      padding: 0;
+      text-align: left;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 100%;
+    }
+    .linkish:hover { color: var(--accent); }
+    .mono { font-family: var(--mono); font-size: 0.82rem; color: var(--muted); }
+    .row-actions { display: flex; gap: 0.35rem; justify-content: flex-end; }
+    .row-actions button {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 0.8rem;
+      cursor: pointer;
+      padding: 0.25rem 0.45rem;
+      border-radius: 6px;
+    }
+    .row-actions button:hover {
+      color: var(--text);
+      background: var(--panel2);
+    }
+    .row-actions button.danger:hover { color: var(--danger); }
+    .empty {
+      text-align: center;
+      padding: 4rem 1rem;
+      color: var(--muted);
+    }
+    .empty h3 { margin: 0 0 0.4rem; color: var(--text); font-weight: 600; }
+    #panel-cluster { display: none; padding: 1.25rem; overflow: auto; }
+    #panel-cluster.active { display: block; }
+    #panel-files.active { display: grid; }
+    #panel-files { display: none; flex: 1; min-height: 0; }
+    .cluster-grid {
+      display: grid;
+      gap: 1rem;
+      grid-template-columns: 1fr;
+      align-items: start;
+    }
+    .cards {
+      display: grid;
+      gap: 1rem;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      margin-bottom: 1rem;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 1rem 1.1rem;
+    }
+    .card h3 {
+      margin: 0 0 0.5rem;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+    .card .v {
+      font-family: var(--mono);
+      font-size: 1.15rem;
+      color: var(--accent);
+    }
+    .topo-panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 1rem;
+    }
+    .topo-panel .head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
+      flex-wrap: wrap;
+    }
+    .topo-panel h2 {
+      margin: 0;
+      font-size: 0.95rem;
+      font-weight: 600;
+    }
+    #topoSvg {
+      width: 100%;
+      height: min(88vh, 1200px);
+      min-height: 880px;
+      background:
+        radial-gradient(circle at 50% 45%, #143528 0%, transparent 55%),
+        var(--bg2);
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      touch-action: none;
+      user-select: none;
+    }
+    #topoSvg .topo-node { cursor: grab; }
+    #topoSvg .topo-node:active { cursor: grabbing; }
+    #topoSvg .topo-node rect { transition: filter .15s ease; }
+    #topoSvg .topo-node:hover rect { filter: brightness(1.12); }
+    #topoSvg .topo-node text,
+    #topoSvg .topo-node circle { pointer-events: none; }
+    #topoSvg .topo-edge { pointer-events: none; }
+    .ops-section {
+      border-top: 1px solid var(--line);
+      padding-top: 0.85rem;
+      margin-top: 0.85rem;
+    }
+    .ops-section:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+    .ops-section h3 {
+      margin: 0 0 0.55rem;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+    }
+    .ops-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      align-items: center;
+      margin-bottom: 0.55rem;
+    }
+    .ops-row label { color: var(--muted); font-size: 0.85rem; min-width: 4.5rem; }
+    .ops-row input, .ops-row select {
+      background: var(--bg2);
+      border: 1px solid var(--line);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 0.4rem 0.55rem;
+      font: inherit;
+      font-family: var(--mono);
+      width: 5.5rem;
+    }
+    .ops-row select { width: auto; min-width: 7rem; }
+    .ops-help {
+      margin: 0 0 0.65rem;
+      font-size: 0.8rem;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    .ops-preview {
+      margin: 0.35rem 0 0.55rem;
+      padding: 0.55rem 0.7rem;
+      border-radius: 8px;
+      border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+      background: color-mix(in srgb, var(--accent) 8%, var(--bg2));
+      font-size: 0.82rem;
+      line-height: 1.45;
+      color: var(--text);
+    }
+    .ops-preview strong { color: var(--accent); font-weight: 600; }
+    .ops-preview .warn { color: #f0a070; }
+    .heal-panel {
+      margin-top: 0.75rem;
+      padding: 0.75rem 0.85rem;
+      border-radius: var(--radius);
+      border: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .heal-panel h3 {
+      margin: 0 0 0.55rem;
+      font-size: 0.85rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+    }
+    .heal-current {
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-bottom: 0.55rem;
+      line-height: 1.45;
+    }
+    .heal-current strong { color: var(--text); font-weight: 600; }
+    .heal-bar {
+      height: 8px;
+      border-radius: 999px;
+      background: var(--panel2);
+      border: 1px solid var(--line);
+      overflow: hidden;
+      margin-bottom: 0.65rem;
+    }
+    .heal-bar > span {
+      display: block;
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--accent-dim), var(--accent));
+      transition: width 0.35s ease;
+    }
+    .heal-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.78rem;
+    }
+    .heal-table th, .heal-table td {
+      text-align: left;
+      padding: 0.3rem 0.35rem;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+    .heal-table th {
+      color: var(--muted);
+      font-weight: 500;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .heal-table code { font-family: var(--mono); font-size: 0.74rem; }
+    .heal-st-queued { color: var(--muted); }
+    .heal-st-running { color: var(--warn); }
+    .heal-st-ok { color: var(--accent); }
+    .heal-st-failed { color: var(--danger); }
+    .repl-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.8rem;
+      margin-top: 0.35rem;
+    }
+    .repl-table th, .repl-table td {
+      text-align: left;
+      padding: 0.35rem 0.4rem;
+      border-bottom: 1px solid var(--line);
+    }
+    .repl-table th { color: var(--muted); font-weight: 500; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    .repl-table code {
+      font-family: var(--mono);
+      color: #7ec8ff;
+      background: var(--bg2);
+      padding: 0.1rem 0.35rem;
+      border-radius: 4px;
+    }
+    .cmd-box {
+      margin-top: 0.5rem;
+      background: var(--bg2);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0.65rem 0.75rem;
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      color: var(--muted);
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .ops-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      margin-bottom: 0.75rem;
+    }
+    .ops-tabs button {
+      border: 1px solid var(--line);
+      background: var(--bg2);
+      color: var(--muted);
+      border-radius: 8px;
+      padding: 0.35rem 0.65rem;
+      font: inherit;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+    .ops-tabs button.active {
+      color: var(--text);
+      border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+      background: color-mix(in srgb, var(--accent) 12%, var(--bg2));
+    }
+    .ops-tab-panel { display: none; }
+    .ops-tab-panel.active { display: block; }
+    .modal-backdrop {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+      display: none; align-items: center; justify-content: center; z-index: 80;
+    }
+    .modal-backdrop.show { display: flex; }
+    .modal {
+      width: min(420px, 92vw);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 1rem 1.1rem;
+      box-shadow: 0 16px 48px rgba(0,0,0,0.35);
+    }
+    .modal h3 { margin: 0 0 0.55rem; font-size: 1rem; }
+    .modal .ops-row { margin-bottom: 0.65rem; }
+    .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.85rem; }
+    #topoSvg .vol-chip { pointer-events: none; fill: #7ab6ff; }
+    pre.raw {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 1rem;
+      overflow: auto;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      margin-top: 1rem;
+      max-height: 240px;
+    }
+    .toast {
+      position: fixed;
+      right: 1rem;
+      bottom: 1rem;
+      background: var(--panel2);
+      border: 1px solid var(--line);
+      color: var(--text);
+      padding: 0.7rem 1rem;
+      border-radius: 8px;
+      box-shadow: 0 8px 30px rgba(0,0,0,.35);
+      opacity: 0;
+      transform: translateY(8px);
+      transition: .2s ease;
+      pointer-events: none;
+      z-index: 20;
+      max-width: min(360px, 90vw);
+    }
+    .toast.show { opacity: 1; transform: none; }
+    .toast.err { border-color: color-mix(in srgb, var(--danger) 50%, var(--line)); color: #ffd4d6; }
+    @media (max-width: 800px) {
+      .layout { grid-template-columns: 1fr; }
+      aside { max-height: 180px; border-right: 0; border-bottom: 1px solid var(--line); }
+    }
+  </style>
+</head>
+<body>
+  <header class="app">
+    <div class="brand">
+      <h1>OpenS3</h1>
+      <span>对象存储控制台</span>
+    </div>
+    <div class="tabs">
+      <button type="button" class="active" data-tab="files">文件</button>
+      <button type="button" data-tab="cluster">集群</button>
+    </div>
+    <div class="status-pill" id="authPill">…</div>
+  </header>
+
+  <div id="panel-files" class="layout active">
+    <aside>
+      <div class="aside-head">
+        <h2>Buckets</h2>
+        <button class="btn" type="button" id="btnNewBucket" title="新建桶">＋</button>
+      </div>
+      <div class="bucket-list" id="bucketList"></div>
+    </aside>
+    <section class="workspace">
+      <div class="toolbar">
+        <div class="crumb" id="crumb">选择一个桶</div>
+        <button class="btn" type="button" id="btnUp" disabled>上级</button>
+        <button class="btn" type="button" id="btnRefresh">刷新</button>
+        <button class="btn" type="button" id="btnViewMode" title="切换目录/扁平列表">扁平列表</button>
+        <button class="btn" type="button" id="btnNewFolder" disabled>新建文件夹</button>
+        <label class="btn primary" id="btnUploadLabel">
+          上传
+          <input type="file" id="fileInput" multiple />
+        </label>
+        <button class="btn danger" type="button" id="btnDeleteBucket" disabled>删桶</button>
+        <span class="mono" id="listHint" style="margin-left:auto;font-size:0.75rem;color:var(--muted)"></span>
+      </div>
+      <div class="table-wrap">
+        <table class="files">
+          <thead>
+            <tr>
+              <th style="width:46%">名称</th>
+              <th style="width:14%">大小</th>
+              <th style="width:24%">修改时间</th>
+              <th style="width:16%"></th>
+            </tr>
+          </thead>
+          <tbody id="fileBody"></tbody>
+        </table>
+        <div class="empty" id="emptyState" hidden>
+          <h3>空目录</h3>
+          <p>上传文件，或新建文件夹开始使用</p>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div id="panel-cluster">
+    <div class="cards">
+      <div class="card"><h3>集群节点</h3><div class="v" id="cClusterNodes">…</div></div>
+      <div class="card"><h3>Volume 节点</h3><div class="v" id="cVolServers">…</div></div>
+      <div class="card"><h3>数据卷</h3><div class="v" id="cVolCount">…</div></div>
+      <div class="card"><h3>多副本卷</h3><div class="v" id="cMultiRepl">…</div></div>
+      <div class="card"><h3>Clerk</h3><div class="v" id="cClerk" style="font-size:0.85rem">…</div></div>
+    </div>
+    <div class="cluster-grid">
+      <div class="topo-panel">
+        <div class="head">
+          <h2>架构拓扑</h2>
+          <div class="ops-row" style="margin:0;flex-wrap:wrap">
+            <button class="btn primary" type="button" id="btnAddDataNode">添加数据节点</button>
+            <button class="btn" type="button" id="btnHeal">Heal</button>
+            <button class="btn" type="button" id="btnBalance">Balance</button>
+            <button class="btn" type="button" id="btnTopoReset">复位布局</button>
+            <button class="btn" type="button" id="btnTopoRefresh">刷新</button>
+          </div>
+        </div>
+        <svg id="topoSvg" viewBox="0 0 1680 1100" role="img" aria-label="集群拓扑"></svg>
+        <p class="empty" style="padding:0.6rem 0 0;text-align:left;font-size:0.8rem" id="topoHint">
+          绿线=对象字节（→Volume）；橙虚线=元数据（→Postgres）；金虚线=Clerk（assign/raft）；蓝虚线=副本。拖拽布局会保存；「复位布局」恢复默认。
+        </p>
+        <div id="replSummary" class="ops-preview" style="margin-top:0.5rem">—</div>
+        <div class="heal-panel" id="healPanel">
+          <h3>
+            <span>Heal 任务</span>
+            <span id="healOverallPct" style="font-family:var(--mono);font-size:0.75rem;color:var(--muted)">—</span>
+          </h3>
+          <div class="ops-row" style="margin:0 0 0.55rem;flex-wrap:wrap;align-items:center">
+            <label for="healBwMbps" style="color:var(--muted);font-size:0.8rem">带宽上限</label>
+            <input id="healBwMbps" type="number" min="0" step="1" value="0" style="width:5rem" title="MB/s，0=不限" />
+            <span style="color:var(--muted);font-size:0.75rem">MB/s（0=不限）</span>
+            <button class="btn" type="button" id="btnHealBwSave">保存</button>
+            <span id="healBwHint" style="color:var(--muted);font-size:0.72rem;font-family:var(--mono)">—</span>
+          </div>
+          <div class="heal-current" id="healCurrent">尚未运行 heal</div>
+          <div class="heal-bar" aria-hidden="true"><span id="healBarFill"></span></div>
+          <table class="heal-table">
+            <thead>
+              <tr>
+                <th>Volume</th>
+                <th>源节点</th>
+                <th>目标</th>
+                <th>进度</th>
+                <th>状态</th>
+              </tr>
+            </thead>
+            <tbody id="healTaskBody">
+              <tr><td colspan="5" style="color:var(--muted)">无任务</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <details style="margin-top:0.75rem">
+      <summary style="cursor:pointer;color:var(--muted);font-size:0.8rem">调试 JSON</summary>
+      <pre class="raw" id="cRaw">loading…</pre>
+    </details>
+  </div>
+
+  <div class="modal-backdrop" id="nodeModal">
+    <div class="modal" style="max-width:520px">
+      <h3 id="nodeModalTitle">节点</h3>
+      <div id="nodeModalBody" class="ops-help">—</div>
+      <div class="modal-actions">
+        <button class="btn" type="button" id="btnNodeModalClose">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="addNodeModal">
+    <div class="modal">
+      <h3>添加数据节点</h3>
+      <p class="ops-help">仅扩容：新建为离线；上线后才可写入。设副本请点击具体数据节点操作。</p>
+      <div class="ops-row">
+        <label>K8s 机器</label>
+        <select id="addNodeK8s"></select>
+      </div>
+      <div class="ops-preview" id="addNodePreview">选择机器后显示将新增的 Pod。</div>
+      <div class="modal-actions">
+        <button class="btn" type="button" id="btnAddNodeCancel">取消</button>
+        <button class="btn primary" type="button" id="btnAddNodeOk">添加</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const state = {
+      bucket: null,
+      prefix: "",
+      buckets: [],
+      // Default flat: nested keys like rw-loop/tmp.md show immediately (no folder click).
+      flat: true,
+      listPoll: null,
+      topo: null,
+      topoPos: {},
+      topoDrag: null,
+      healPoll: null,
+      assignPolicy: null,
+    };
+
+    // v9: unified filer column (no separate s3); client→filer→meta→volume, clerks on top.
+    const TOPO_POS_KEY = "opens3.topo.pos.v9";
+    try {
+      state.topoPos = JSON.parse(localStorage.getItem(TOPO_POS_KEY) || "{}") || {};
+    } catch (_) {
+      state.topoPos = {};
+    }
+    state.topoLayoutLoaded = false;
+    state.topoLayoutCustom = Object.keys(state.topoPos).length > 0;
+
+    function toast(msg, err = false) {
+      const el = document.getElementById("toast");
+      el.textContent = msg;
+      el.className = "toast show" + (err ? " err" : "");
+      clearTimeout(toast._t);
+      toast._t = setTimeout(() => el.classList.remove("show"), 2800);
+    }
+
+    async function api(path, opts = {}) {
+      const r = await fetch(path, opts);
+      if (!r.ok) {
+        let detail = r.statusText;
+        try {
+          const j = await r.json();
+          detail = j.error || j.message || JSON.stringify(j);
+        } catch (_) {
+          try { detail = await r.text(); } catch (_) {}
+        }
+        throw new Error(detail || `HTTP ${r.status}`);
+      }
+      if (r.status === 204) return null;
+      const ct = r.headers.get("content-type") || "";
+      if (ct.includes("application/json")) return r.json();
+      return r;
+    }
+
+    function fmtSize(n) {
+      if (n == null || n === "") return "—";
+      n = Number(n);
+      if (n < 1024) return n + " B";
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+      if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + " MB";
+      return (n / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+    }
+
+    function fmtBytes(n) {
+      n = Number(n) || 0;
+      if (n < 1024) return n.toFixed(0) + " B";
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+      if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(2) + " MB";
+      return (n / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+    }
+
+    function fmtTraffic(e) {
+      const parts = [];
+      if (e.bytes_per_sec > 0.5) parts.push(fmtBytes(e.bytes_per_sec) + "/s");
+      else if (e.bytes_total > 0) parts.push("Σ " + fmtBytes(e.bytes_total));
+      if (e.ops_per_sec > 0.05) parts.push(e.ops_per_sec.toFixed(2) + " ops/s");
+      else if (e.ops_total > 0) parts.push("Σ " + Number(e.ops_total).toFixed(0) + " ops");
+      return parts.length ? parts.join(" · ") : "idle";
+    }
+
+    function defaultTopoLayout(nodes) {
+      const byKind = {
+        client: [],
+        s3: [],
+        filer: [],
+        clerk: [],
+        volume: [],
+        metadb: [],
+        other: [],
+      };
+      nodes.forEach((n) => (byKind[n.kind] || byKind.other).push(n));
+      const sortById = (a, b) => String(a.id).localeCompare(String(b.id));
+      const vols = byKind.volume.slice().sort(sortById);
+      const clerks = byKind.clerk.slice().sort(sortById);
+      // Prefer leader → followers left-to-right on the top row.
+      clerks.sort((a, b) => {
+        const la = a.meta && (a.meta.leader === true || a.meta.raft_role === "leader") ? 0 : 1;
+        const lb = b.meta && (b.meta.leader === true || b.meta.raft_role === "leader") ? 0 : 1;
+        return la - lb || sortById(a, b);
+      });
+      const gateways = byKind.filer.concat(byKind.s3).sort(sortById);
+      const metadbs = byKind.metadb.slice().sort(sortById);
+      const clients = byKind.client.slice().sort(sortById);
+      const entryOrder = { s3: 0, fuse: 1, http: 2, webdav: 3 };
+      clients.sort((a, b) => {
+        const ea = (a.meta && a.meta.entry) || "";
+        const eb = (b.meta && b.meta.entry) || "";
+        return (entryOrder[ea] ?? 9) - (entryOrder[eb] ?? 9) || sortById(a, b);
+      });
+      const s3Clients = clients.filter((c) => {
+        const e = (c.meta && c.meta.entry) || "";
+        return e === "s3" || e === "fuse" || c.id === "client-s3" || c.id === "client-fuse";
+      });
+      const filerClients = clients.filter((c) => !s3Clients.includes(c));
+
+      // Default structure (matches Admin screenshot):
+      //   [clerks ─────────────── top / right]
+      //   clients → filer → meta → volumes
+      const ROW = 150;
+      const COL_GAP = 340;
+      const PAD = 90;
+      const CLERK_Y = 100;
+      const BODY_TOP = 280;
+      const midGap = 70;
+      const clientCount = Math.max(clients.length, 1);
+      const gwCount = Math.max(gateways.length, 1);
+      const volCount = Math.max(vols.length, 1);
+      const bodyRows = Math.max(clientCount, gwCount, volCount, 4);
+      const bodyH = BODY_TOP + bodyRows * ROW + PAD;
+      const W = Math.max(1680, PAD * 2 + COL_GAP * 3 + 200);
+      const H = Math.max(980, bodyH);
+
+      const COL = {
+        client: PAD + 80,
+        gateway: PAD + 80 + COL_GAP,
+        metadb: PAD + 80 + COL_GAP * 2,
+        volume: PAD + 80 + COL_GAP * 3,
+      };
+
+      const placeColumn = (list, x, y0, y1) => {
+        if (!list.length) return;
+        const n = list.length;
+        const span = Math.max(y1 - y0, Math.max(n - 1, 1) * ROW);
+        const start = n === 1 ? (y0 + y1) / 2 : y0;
+        const step = n === 1 ? 0 : span / (n - 1);
+        list.forEach((node, i) => {
+          pos[node.id] = { x, y: start + i * step };
+        });
+      };
+
+      const placeCompactColumn = (list, x, yCenter) => {
+        if (!list.length) return;
+        const n = list.length;
+        const span = (n - 1) * ROW;
+        const start = yCenter - span / 2;
+        list.forEach((node, i) => {
+          pos[node.id] = { x, y: start + i * ROW };
+        });
+      };
+
+      const placeRow = (list, y, x0, x1) => {
+        if (!list.length) return;
+        const span = Math.max(x1 - x0, (list.length - 1) * 240);
+        const start = list.length === 1 ? (x0 + x1) / 2 : x0;
+        const step = list.length === 1 ? 0 : span / (list.length - 1);
+        list.forEach((node, i) => {
+          pos[node.id] = { x: start + i * step, y };
+        });
+      };
+
+      const pos = {};
+      // Clerks on top, above meta + volume columns (right half).
+      placeRow(clerks, CLERK_Y, COL.metadb - 40, COL.volume + 40);
+
+      const bodyBottom = H - PAD;
+      const splitY = BODY_TOP + Math.max(s3Clients.length, 1) * ROW + midGap / 2;
+      // Clients: S3/FUSE upper, HTTP/WebDAV lower (same column).
+      if (s3Clients.length && filerClients.length) {
+        placeColumn(s3Clients, COL.client, BODY_TOP, splitY - midGap / 2 - 20);
+        placeColumn(filerClients, COL.client, splitY + midGap / 2 + 20, bodyBottom);
+      } else {
+        placeCompactColumn(clients, COL.client, (BODY_TOP + bodyBottom) / 2);
+      }
+      // Unified filer (or legacy s3) — compact stack aligned with client mid-band.
+      placeCompactColumn(gateways, COL.gateway, (BODY_TOP + bodyBottom) / 2);
+      // Meta DB between filer and volumes, upper-middle.
+      placeCompactColumn(metadbs, COL.metadb, BODY_TOP + ROW);
+      // Volumes on the right, mid/lower band under clerks.
+      placeCompactColumn(vols, COL.volume, (BODY_TOP + bodyBottom) / 2 + 20);
+
+      nodes.forEach((node) => {
+        if (!pos[node.id]) pos[node.id] = { x: W * 0.5, y: H * 0.5 };
+      });
+      return { pos, W, H };
+    }
+
+    function ensureTopoPositions(nodes) {
+      const { pos: fresh, W, H } = defaultTopoLayout(nodes);
+      const merged = {};
+      nodes.forEach((n) => {
+        // Prefer saved (manual) position; only fall back to auto layout for new nodes.
+        merged[n.id] = state.topoPos[n.id]
+          ? { ...state.topoPos[n.id] }
+          : { ...fresh[n.id] };
+      });
+      // Keep stale ids in memory so a brief topology flicker does not drop them;
+      // prune only against the current node set when persisting.
+      state.topoPos = { ...state.topoPos, ...merged };
+      return { pos: merged, W, H };
+    }
+
+    function pruneTopoPos(nodes) {
+      const keep = {};
+      (nodes || []).forEach((n) => {
+        if (state.topoPos[n.id]) keep[n.id] = state.topoPos[n.id];
+      });
+      // Also keep ids that were manually placed even if temporarily missing,
+      // unless we are resetting — callers pass null to mean "save all".
+      if (!nodes) return { ...state.topoPos };
+      // Retain previous keys that look like stable layout slots (s3-N / filer-N / …)
+      // so a single missing pod does not wipe the slot before it returns.
+      Object.keys(state.topoPos).forEach((id) => {
+        if (keep[id]) return;
+        if (
+          /^(s3|filer|clerk|volume|client|metadb)-/.test(id) ||
+          id.startsWith("client-") ||
+          id === "metadb"
+        ) {
+          keep[id] = state.topoPos[id];
+        }
+      });
+      return keep;
+    }
+
+    function saveTopoPos(opts = {}) {
+      const persistServer = opts.server !== false;
+      const nodes = (state.topo && state.topo.nodes) || null;
+      const positions = pruneTopoPos(nodes);
+      state.topoPos = { ...state.topoPos, ...positions };
+      state.topoLayoutCustom = Object.keys(positions).length > 0;
+      try {
+        localStorage.setItem(TOPO_POS_KEY, JSON.stringify(positions));
+      } catch (_) {}
+      if (!persistServer) return;
+      // Fire-and-forget cluster-wide layout (Filer KV).
+      api("/admin/api/topo-layout", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ positions }),
+      }).catch(() => {});
+    }
+
+    async function loadTopoLayoutFromServer() {
+      try {
+        const j = await api("/admin/api/topo-layout");
+        const positions = (j && j.positions) || {};
+        if (positions && typeof positions === "object" && Object.keys(positions).length) {
+          // Server is source of truth for shared cluster layout.
+          state.topoPos = { ...state.topoPos, ...positions };
+          state.topoLayoutCustom = true;
+          try {
+            localStorage.setItem(TOPO_POS_KEY, JSON.stringify(state.topoPos));
+          } catch (_) {}
+        }
+      } catch (_) {
+        /* offline / first boot — keep localStorage */
+      } finally {
+        state.topoLayoutLoaded = true;
+      }
+    }
+
+    function svgPoint(svg, evt) {
+      const pt = svg.createSVGPoint();
+      pt.x = evt.clientX;
+      pt.y = evt.clientY;
+      const ctm = svg.getScreenCTM();
+      if (!ctm) return { x: 0, y: 0 };
+      return pt.matrixTransform(ctm.inverse());
+    }
+
+    function quadAt(a, b, c, t) {
+      const u = 1 - t;
+      return {
+        x: u * u * a.x + 2 * u * t * c.x + t * t * b.x,
+        y: u * u * a.y + 2 * u * t * c.y + t * t * b.y,
+      };
+    }
+
+    function edgePointAtPad(a, b, c, towardB, pad) {
+      // Binary-search t so the point sits ~pad px from the node center (arrow not under card).
+      let lo = towardB ? 0.45 : 0;
+      let hi = towardB ? 1 : 0.55;
+      const target = towardB ? b : a;
+      for (let i = 0; i < 14; i++) {
+        const t = (lo + hi) / 2;
+        const p = quadAt(a, b, c, t);
+        const d = Math.hypot(target.x - p.x, target.y - p.y);
+        if (towardB) {
+          if (d > pad) lo = t;
+          else hi = t;
+        } else {
+          if (d > pad) hi = t;
+          else lo = t;
+        }
+      }
+      return quadAt(a, b, c, (lo + hi) / 2);
+    }
+
+    function edgeGeometry(a, b, bend) {
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      const nx = -dy / dist;
+      const ny = dx / dist;
+      const c = {
+        x: (a.x + b.x) / 2 + nx * bend,
+        y: (a.y + b.y) / 2 + ny * bend,
+      };
+      // Node cards are ~156×88; keep arrowheads in the open gap.
+      const pad = Math.min(96, dist * 0.3);
+      const start = edgePointAtPad(a, b, c, false, pad);
+      const end = edgePointAtPad(a, b, c, true, pad);
+      const mid = quadAt(a, b, c, 0.5);
+      // Tangent near end for an explicit mid-arrow (replica direction).
+      const near = quadAt(a, b, c, 0.72);
+      const path = `M ${start.x} ${start.y} Q ${c.x} ${c.y} ${end.x} ${end.y}`;
+      return {
+        path,
+        mx: mid.x,
+        my: mid.y,
+        cx: c.x,
+        cy: c.y,
+        endX: end.x,
+        endY: end.y,
+        tipX: end.x,
+        tipY: end.y,
+        dirX: end.x - near.x,
+        dirY: end.y - near.y,
+      };
+    }
+
+    function updateTopoEdges() {
+      const topo = state.topo;
+      if (!topo) return;
+      const svg = document.getElementById("topoSvg");
+      const pos = state.topoPos;
+      const edges = topo.edges || [];
+      edges.forEach((e, i) => {
+        const a = pos[e.from];
+        const b = pos[e.to];
+        const g = svg.querySelector(`[data-edge="${i}"]`);
+        if (!a || !b || !g) return;
+        const bend = (i % 2 === 0 ? 1 : -1) * (36 + (i % 3) * 14);
+        const geo = edgeGeometry(a, b, bend);
+        const path = g.querySelector("path");
+        const labelBg = g.querySelector("rect");
+        const label = g.querySelector("text");
+        const tip = g.querySelector("polygon");
+        if (path) path.setAttribute("d", geo.path);
+        if (labelBg) {
+          labelBg.setAttribute("x", geo.mx - 78);
+          labelBg.setAttribute("y", geo.my - 11);
+        }
+        if (label) {
+          label.setAttribute("x", geo.mx);
+          label.setAttribute("y", geo.my + 4);
+        }
+        if (
+          tip &&
+          (e.kind === "replica" ||
+            e.kind === "meta" ||
+            e.kind === "control")
+        ) {
+          const isHb =
+            e.kind === "control" &&
+            String(e.label || "").includes("heartbeat");
+          const alen = isHb ? 9 : 14;
+          const aw = isHb ? 4 : 7;
+          const len = Math.hypot(geo.dirX, geo.dirY) || 1;
+          const ux = geo.dirX / len;
+          const uy = geo.dirY / len;
+          const px = -uy;
+          const py = ux;
+          const base = { x: geo.tipX - ux * alen, y: geo.tipY - uy * alen };
+          const l = { x: base.x + px * aw, y: base.y + py * aw };
+          const r = { x: base.x - px * aw, y: base.y - py * aw };
+          tip.setAttribute(
+            "points",
+            `${geo.tipX},${geo.tipY} ${l.x},${l.y} ${r.x},${r.y}`
+          );
+        }
+      });
+    }
+
+    function renderTopo(topo) {
+      state.topo = topo;
+      const svg = document.getElementById("topoSvg");
+      const nodes = topo.nodes || [];
+      const edges = topo.edges || [];
+      const { pos, W, H } = ensureTopoPositions(nodes);
+      const kindColor = {
+        client: "#8aa396",
+        s3: "#5ee0a0",
+        filer: "#c3a6ff",
+        clerk: "#e6c07b",
+        volume: "#7ab6ff",
+        metadb: "#ff9f43",
+      };
+      svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+
+      const edgeHtml = edges
+        .map((e, i) => {
+          const a = pos[e.from];
+          const b = pos[e.to];
+          if (!a || !b) return "";
+          const bend = (i % 2 === 0 ? 1 : -1) * (36 + (i % 3) * 14);
+          const geo = edgeGeometry(a, b, bend);
+          const active =
+            (e.bytes_per_sec || 0) +
+            (e.ops_per_sec || 0) +
+            (e.bytes_total || 0) +
+            (e.ops_total || 0);
+          const thick = Math.min(
+            6,
+            1.4 + Math.log10(1 + (e.bytes_per_sec || e.ops_per_sec || 0) * 10)
+          );
+          const isRaft = e.kind === "raft";
+          const isReplica = e.kind === "replica";
+          const isMeta =
+            e.kind === "meta" ||
+            (e.kind === "control" && String(e.label || "") === "meta");
+          const isHeartbeat =
+            e.kind === "control" && String(e.label || "").includes("heartbeat");
+          // assign/lookup → Clerk (exclude heartbeat / meta)
+          const isClerkCtrl = e.kind === "control" && !isHeartbeat && !isMeta;
+          const isTraffic = e.kind === "data" || e.kind === "client";
+          // Meta → orange; Clerk control → gold (same family as Clerk nodes).
+          const META_COLOR = "#ff9f43";
+          const CLERK_COLOR = "#e6c07b";
+          const stroke = isRaft || isClerkCtrl
+            ? CLERK_COLOR
+            : isReplica
+              ? "#7ab6ff"
+              : isMeta
+                ? META_COLOR
+                : isHeartbeat
+                  ? "#8aa396"
+                  : isTraffic
+                    ? active > 0
+                      ? "#5ee0a0"
+                      : "#3d8f6a"
+                    : "#334840";
+          const markerId = isRaft
+            ? "arrow-raft"
+            : isClerkCtrl
+              ? "arrow-clerk"
+              : isReplica
+                ? "arrow-replica"
+                : isMeta
+                  ? "arrow-meta"
+                  : isHeartbeat
+                    ? "arrow-heartbeat"
+                    : "arrow-traffic";
+          const dash = isRaft
+            ? `stroke-dasharray="6 4"`
+            : isReplica
+              ? `stroke-dasharray="6 4"`
+              : isMeta
+                ? `stroke-dasharray="5 4"`
+                : isHeartbeat
+                  ? `stroke-dasharray="3 5"`
+                  : isClerkCtrl
+                    ? `stroke-dasharray="7 3"`
+                    : "";
+          const dirLabel = (() => {
+            if (isRaft) return `${e.label} →`;
+            if (isReplica) {
+              const code = (e.label || "").replace(/^副本$/, "").trim();
+              return code ? `复制 ${code} →` : "复制 →";
+            }
+            if (isMeta) return "meta →";
+            if (isHeartbeat) return "heartbeat →";
+            if (isClerkCtrl) return `assign → · ${fmtTraffic(e)}`;
+            if (e.kind === "data") {
+              return `data → · ${fmtTraffic(e)}`;
+            }
+            if (e.kind === "client") {
+              const entry = (e.label || "req").trim() || "req";
+              return `${entry} → · ${fmtTraffic(e)}`;
+            }
+            return `${e.label} → · ${fmtTraffic(e)}`;
+          })();
+          const labelFill = isRaft || isClerkCtrl
+            ? CLERK_COLOR
+            : isReplica
+              ? "#7ab6ff"
+              : isMeta
+                ? META_COLOR
+                : isHeartbeat
+                  ? "#8aa396"
+                  : isTraffic
+                    ? "#5ee0a0"
+                    : "#d5ebe0";
+          const sw = isHeartbeat
+            ? 1.2
+            : isMeta || isClerkCtrl
+              ? 2.2
+              : isRaft || isReplica || isTraffic
+                ? Math.max(thick, isReplica ? 3.0 : 2.4)
+                : thick;
+          const pathOpacity = isHeartbeat ? "0.55" : isMeta || isClerkCtrl ? "0.9" : "0.95";
+          // Explicit triangle at tip so direction stays visible near node cards.
+          let tipArrow = "";
+          if (isReplica || isHeartbeat || isMeta || isClerkCtrl) {
+            const fill = isReplica
+              ? "#7ab6ff"
+              : isMeta
+                ? META_COLOR
+                : isClerkCtrl
+                  ? CLERK_COLOR
+                  : "#8aa396";
+            const len = Math.hypot(geo.dirX, geo.dirY) || 1;
+            const ux = geo.dirX / len;
+            const uy = geo.dirY / len;
+            const px = -uy;
+            const py = ux;
+            const tip = { x: geo.tipX, y: geo.tipY };
+            const alen = isHeartbeat ? 9 : 14;
+            const aw = isHeartbeat ? 4 : 7;
+            const base = { x: tip.x - ux * alen, y: tip.y - uy * alen };
+            const l = { x: base.x + px * aw, y: base.y + py * aw };
+            const r = { x: base.x - px * aw, y: base.y - py * aw };
+            tipArrow = `<polygon points="${tip.x},${tip.y} ${l.x},${l.y} ${r.x},${r.y}" fill="${fill}" stroke="#0c1210" stroke-width="0.6" opacity="${isHeartbeat ? 0.7 : 1}"/>`;
+          }
+          return `
+            <g data-edge="${i}" class="topo-edge">
+              <path d="${geo.path}" fill="none" stroke="${stroke}" stroke-width="${sw}" ${dash} stroke-linecap="round" marker-end="url(#${markerId})" opacity="${pathOpacity}"/>
+              ${tipArrow}
+              <rect x="${geo.mx - 100}" y="${geo.my - 13}" width="200" height="26" rx="8" fill="#0c1210" opacity="0.92"/>
+              <text x="${geo.mx}" y="${geo.my + 5}" fill="${labelFill}" font-size="12" text-anchor="middle">${esc(dirLabel)}</text>
+            </g>`;
+        })
+        .join("");
+
+      const arrowDefs = `
+        <defs>
+          <marker id="arrow-raft" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="12" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#e6c07b"/>
+          </marker>
+          <marker id="arrow-clerk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="12" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#e6c07b"/>
+          </marker>
+          <marker id="arrow-replica" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="14" markerHeight="14" markerUnits="userSpaceOnUse" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#7ab6ff"/>
+          </marker>
+          <marker id="arrow-heartbeat" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#8aa396" opacity="0.7"/>
+          </marker>
+          <marker id="arrow-traffic" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="12" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#5ee0a0"/>
+          </marker>
+          <marker id="arrow-meta" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="12" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#ff9f43"/>
+          </marker>
+        </defs>`;
+
+      const nodeHtml = nodes
+        .map((n) => {
+          const p = pos[n.id];
+          const fill = kindColor[n.kind] || "#8aa396";
+          const fault =
+            n.status === "down" ||
+            n.status === "stale" ||
+            n.status === "crashloop" ||
+            n.status === "not_ready" ||
+            n.status === "pending";
+          const volOnline = !!(n.meta && n.meta.online);
+          // 数据节点：离线黄 / 在线绿 / 故障红；其它组件：故障红，Clerk leader 保持金边。
+          let stroke = fill;
+          if (fault) {
+            stroke = "#f07178"; // 故障
+          } else if (n.kind === "volume") {
+            stroke = volOnline ? "#5ee0a0" : "#e6c07b"; // 在线绿 / 未上线黄
+          }
+          const raftRole = (n.meta && n.meta.raft_role) || (n.meta && n.meta.leader ? "leader" : "");
+          const isLeader = raftRole === "leader" || (n.meta && n.meta.leader === true);
+          const clientEntry = (n.meta && n.meta.entry) || "";
+          const clientKindLine =
+            clientEntry === "s3"
+              ? "S3"
+              : clientEntry === "fuse"
+                ? "FUSE"
+                : clientEntry === "http"
+                  ? "HTTP"
+                  : clientEntry === "webdav"
+                    ? "WebDAV"
+                    : "CLIENT";
+          let kindLine =
+            n.kind === "clerk" && raftRole
+              ? isLeader
+                ? "LEADER"
+                : "follower"
+              : n.kind === "volume"
+                ? "数据节点"
+                : n.kind === "metadb"
+                  ? "META"
+                  : n.kind === "client"
+                    ? clientKindLine
+                    : n.kind;
+          const kindFill = n.kind === "clerk" && isLeader ? "#ffd56a" : fill;
+          let nameLine = n.meta && n.meta.pod ? n.meta.pod : n.label;
+          if (n.kind === "clerk" && nameLine.includes("-clerk-")) {
+            nameLine = nameLine.replace(/^.*?(clerk-\d+)$/, "$1");
+          }
+          if (n.kind === "volume" && nameLine.includes("-volume-")) {
+            nameLine = nameLine.replace(/^.*?(volume-\d+)$/, "$1");
+          }
+          if (nameLine.length > 20) nameLine = nameLine.slice(0, 18) + "…";
+          const k8sNode = (n.meta && n.meta.kubernetes_node) || "";
+          const vols = (n.meta && Array.isArray(n.meta.volumes) ? n.meta.volumes : []) || [];
+          const isVol = n.kind === "volume";
+          const boxH = isVol ? 92 : 72;
+          const boxY = isVol ? -46 : -36;
+          const boxW = 156;
+          const volIds = vols.map((s) => s.id).filter((x) => x != null);
+          const shown = volIds.slice(0, 6);
+          const more = volIds.length - shown.length;
+          const chips = shown
+            .map((id, idx) => {
+              const x = -58 + (idx % 3) * 42;
+              const y = 28 + Math.floor(idx / 3) * 14;
+              return `<text class="vol-chip" data-vol-id="${esc(id)}" x="${x}" y="${y}" fill="#7ab6ff" font-size="11" font-family="var(--mono),monospace">#${esc(id)}</text>`;
+            })
+            .join("");
+          const moreTxt =
+            more > 0
+              ? `<text x="48" y="42" fill="#8aa396" font-size="11">+${more}</text>`
+              : "";
+          const replicaOf = (n.meta && n.meta.replica_of) || "";
+          let replicaShort = "";
+          if (replicaOf) {
+            replicaShort = String(replicaOf).replace(/^.*?(volume-\d+)$/, "$1");
+            if (replicaShort.length > 14) replicaShort = replicaShort.slice(0, 12) + "…";
+          }
+          const podName =
+            (n.meta && n.meta.pod) || String(n.id || "").replace(/^volume-/, "");
+          const outReplicas = isVol
+            ? ((state.topo || {}).nodes || []).filter(
+                (o) =>
+                  o.kind === "volume" &&
+                  o.meta &&
+                  o.meta.replica_of &&
+                  o.meta.replica_of === podName
+              ).length
+            : 0;
+          const volLine = isVol
+            ? `<text x="0" y="10" fill="#8aa396" font-size="11" text-anchor="middle">数据卷 ×${volIds.length}${k8sNode ? " · " + esc(String(k8sNode).slice(0, 12)) : ""}</text>${chips}${moreTxt}`
+            : `<text x="0" y="16" fill="#e8f0ec" font-size="13" text-anchor="middle">${esc(nameLine)}</text>`;
+          let replicaLine = "";
+          if (isVol && replicaOf) {
+            replicaLine = `<text x="0" y="${boxY + boxH - 6}" fill="#7ab6ff" font-size="11" text-anchor="middle">副本 ← ${esc(replicaShort)}</text>`;
+          } else if (isVol && outReplicas > 0) {
+            replicaLine = `<text x="0" y="${boxY + boxH - 6}" fill="#7ab6ff" font-size="11" text-anchor="middle">副本 ×${outReplicas}</text>`;
+          }
+          const boxH2 = isVol && (replicaOf || outReplicas > 0) ? boxH + 14 : boxH;
+          return `
+            <g class="topo-node" data-id="${esc(n.id)}" transform="translate(${p.x}, ${p.y})">
+              <rect x="${-boxW / 2}" y="${boxY}" width="${boxW}" height="${boxH2}" rx="16" fill="#16201c" stroke="${isLeader && !fault ? "#ffd56a" : stroke}" stroke-width="${isVol || isLeader ? 2.8 : 2.2}"/>
+              <circle cx="${-boxW / 2 + 22}" cy="${isVol ? -22 : -2}" r="7" fill="${kindFill}"/>
+              <text x="0" y="${isVol ? -24 : -6}" fill="${kindFill}" font-size="13" font-weight="700" text-anchor="middle">${esc(kindLine)}</text>
+              ${isVol ? `<text x="0" y="-6" fill="#e8f0ec" font-size="12" text-anchor="middle">${esc(nameLine)}</text>` : ""}
+              ${volLine}
+              ${replicaLine}
+            </g>`;
+        })
+        .join("");
+
+      svg.innerHTML = `${arrowDefs}<g id="topoEdges">${edgeHtml}</g><g id="topoNodes">${nodeHtml}</g>`;
+
+      svg.querySelectorAll(".topo-node").forEach((el) => {
+        el.addEventListener("pointerdown", (ev) => {
+          ev.preventDefault();
+          const id = el.getAttribute("data-id");
+          const pt = svgPoint(svg, ev);
+          const cur = state.topoPos[id] || { x: 0, y: 0 };
+          state.topoDrag = {
+            id,
+            dx: pt.x - cur.x,
+            dy: pt.y - cur.y,
+            startX: pt.x,
+            startY: pt.y,
+            moved: false,
+          };
+          el.setPointerCapture(ev.pointerId);
+        });
+      });
+
+      const vols = nodes.filter((n) => n.kind === "volume");
+      const clerks = nodes.filter((n) => n.kind === "clerk");
+      const leaderNode = clerks.find((n) => n.meta && (n.meta.leader || n.meta.raft_role === "leader"));
+
+      const s = topo.summary || {};
+      document.getElementById("cClusterNodes").textContent = s.cluster_nodes ?? "—";
+      document.getElementById("cVolServers").textContent = s.volume_nodes ?? vols.length ?? "—";
+      document.getElementById("cVolCount").textContent = s.data_volumes ?? "—";
+      document.getElementById("cMultiRepl").textContent =
+        s.multi_replica_volumes ?? (topo.replication && topo.replication.multi_location_volumes) ?? "—";
+      document.getElementById("cClerk").textContent = leaderNode
+        ? `leader · ${(leaderNode.meta && leaderNode.meta.pod) || leaderNode.label}`
+        : clerks.length
+          ? `${clerks.length} clerks`
+          : topo.clerk || "—";
+      renderReplication(topo.replication || {});
+      document.getElementById("cRaw").textContent = JSON.stringify(
+        {
+          summary: s,
+          replication: topo.replication,
+          volumes_by_node: topo.volumes_by_node,
+          scale: topo.scale,
+          nodes: nodes.map((n) => ({
+            id: n.id,
+            kind: n.kind,
+            status: n.status,
+            volume_count: n.meta && n.meta.volume_count,
+            kubernetes_node: n.meta && n.meta.kubernetes_node,
+          })),
+          edges,
+        },
+        null,
+        2
+      );
+    }
+
+    function renderReplication(repl) {
+      const box = document.getElementById("replSummary");
+      const rows = Array.isArray(repl.by_code) ? repl.by_code : [];
+      if (!rows.length) {
+        box.innerHTML = `<p class="ops-help" style="margin:0">暂无卷数据，或 Clerk 未就绪。</p>`;
+        return;
+      }
+      const multi = repl.multi_location_volumes ?? 0;
+      const under = repl.under_replicated ?? 0;
+      const over = repl.over_replicated ?? 0;
+      const actual = Array.isArray(repl.actual_copies) ? repl.actual_copies : [];
+      box.innerHTML = `
+        <p class="ops-help" style="margin:0 0 0.4rem">
+          策略 vs 实际：多节点落点 <strong>${multi}</strong> 卷（拓扑蓝线）；
+          欠副本 <strong>${under}</strong>，超额副本 <strong>${over}</strong>。
+        </p>
+        <table class="repl-table">
+          <thead><tr><th>策略 XYZ</th><th>卷数</th><th>应有份数</th><th>含义</th></tr></thead>
+          <tbody>
+            ${rows
+              .map(
+                (r) => `<tr>
+                <td><code>${esc(r.code)}</code></td>
+                <td>${esc(r.volumes)}</td>
+                <td>${esc(r.copies)}</td>
+                <td>${esc(r.desc || "")}</td>
+              </tr>`
+              )
+              .join("")}
+          </tbody>
+        </table>
+        ${
+          actual.length
+            ? `<table class="repl-table" style="margin-top:0.55rem">
+                <thead><tr><th>实际落点份数</th><th>卷数</th></tr></thead>
+                <tbody>
+                  ${actual
+                    .map(
+                      (r) => `<tr>
+                      <td>${esc(r.actual_copies)} 个 Volume 节点</td>
+                      <td>${esc(r.volumes)}</td>
+                    </tr>`
+                    )
+                    .join("")}
+                </tbody>
+              </table>`
+            : ""
+        }`;
+    }
+
+    function scaleTargetInfo() {
+      const topo = state.topo || {};
+      const s = topo.summary || {};
+      const scale = topo.scale || {};
+      const resources = scale.resources || {};
+      const componentEl = document.getElementById("scaleComponent");
+      const replicasEl = document.getElementById("scaleReplicas");
+      const component = (componentEl && componentEl.value) || "filer";
+      const target = Number((replicasEl && replicasEl.value) || 1);
+      const nodes = topo.nodes || [];
+      const gatewayCount =
+        s.filer_nodes ??
+        s.s3_nodes ??
+        nodes.filter((n) => n.kind === "filer" || n.kind === "s3").length;
+      const current =
+        component === "volume"
+          ? s.volume_nodes ?? nodes.filter((n) => n.kind === "volume").length
+          : component === "filer" || component === "s3"
+            ? gatewayCount
+            : s.clerk_nodes ?? nodes.filter((n) => n.kind === "clerk").length;
+      const res = resources[component] || resources.filer || {};
+      const kindLabel =
+        res.kind === "statefulset" ? "StatefulSet" : res.kind === "deployment" ? "Deployment" : res.kind || "workload";
+      const name = res.name || `${(scale.release || "opens3")}-filer`;
+      const ns = scale.namespace || "opens3";
+      const what =
+        component === "volume"
+          ? "Volume 存储节点（跑 volume server 的 Pod）"
+          : component === "filer" || component === "s3"
+            ? "Filer Pod（S3 + HTTP/WebDAV）"
+            : "Clerk Pod（禁止从此处扩缩）";
+      const pods =
+        component === "volume"
+          ? Array.from({ length: Math.max(target, 0) }, (_, i) => `${name}-${i}`)
+          : component === "filer" || component === "s3"
+            ? [`${name}-* ×${target}`]
+            : Array.from({ length: Math.max(target, 0) }, (_, i) => `${name}-${i}`);
+      return { component, target, current, kindLabel, name, ns, what, pods, delta: target - Number(current || 0) };
+    }
+
+    function updateScalePreview() {
+      const el = document.getElementById("scalePreview");
+      const hint = document.getElementById("scaleCurrentHint");
+      if (!el) return;
+      const info = scaleTargetInfo();
+      if (hint) hint.textContent = `当前 ${info.current ?? "—"}`;
+      el.innerHTML = `
+        Filer：<strong>${esc(info.current)}</strong> → <strong>${esc(info.target)}</strong><br>
+        资源：${esc(info.ns)}/${esc(info.kindLabel)} ${esc(info.name)}`;
+    }
+
+    async function setNodeOnline(nodeId, online) {
+      if (!nodeId) return;
+      await api("/admin/api/ops/set-node-online", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ node_id: nodeId, online }),
+      });
+      toast(`${nodeId} 已${online ? "上线" : "下线"}`);
+      await loadStatus();
+    }
+
+    async function loadK8sNodes() {
+      const sel = document.getElementById("addNodeK8s");
+      if (!sel) return;
+      try {
+        const j = await api("/admin/api/ops/k8s-nodes");
+        const nodes = j.nodes || [];
+        sel.innerHTML = nodes.length
+          ? nodes
+              .map(
+                (n) =>
+                  `<option value="${esc(n.name)}" ${n.ready && !n.unschedulable ? "" : "disabled"}>
+                    ${esc(n.name)} · Ready=${n.ready} · 已有数据节点 ${n.data_nodes || 0}
+                  </option>`
+              )
+              .join("")
+          : `<option value="">无可用 K8s Node</option>`;
+        updateAddNodePreview();
+      } catch (e) {
+        sel.innerHTML = `<option value="">加载失败</option>`;
+      }
+    }
+
+    function updateAddNodePreview() {
+      const el = document.getElementById("addNodePreview");
+      if (!el) return;
+      const kn = document.getElementById("addNodeK8s").value;
+      const vols = ((state.topo || {}).nodes || []).filter((n) => n.kind === "volume");
+      const release = ((state.topo || {}).scale || {}).release || "opens3";
+      const next = `${release}-volume-${vols.length}`;
+      el.innerHTML = kn
+        ? `将在 K8s 机器 <strong>${esc(kn)}</strong> 上添加数据节点 <code>${esc(next)}</code>（仅扩容）`
+        : "请选择 K8s 机器";
+    }
+
+    async function addDataNode() {
+      const kubernetes_node = document.getElementById("addNodeK8s").value;
+      if (!kubernetes_node) {
+        toast("请选择 K8s 机器", true);
+        return;
+      }
+      if (!confirm(`在 ${kubernetes_node} 上添加一个数据节点（仅扩容）？`)) return;
+      try {
+        const j = await api("/admin/api/ops/add-data-node", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kubernetes_node }),
+        });
+        document.getElementById("addNodeModal").classList.remove("show");
+        toast(
+          j.matched
+            ? `已添加 ${j.pod} → ${j.scheduled_on}`
+            : `已添加 ${j.pod || ""}（调度到 ${j.scheduled_on || "?"}）`
+        );
+        await loadStatus();
+      } catch (e) {
+        toast(String(e.message || e), true);
+      }
+    }
+
+    function lastVolumePod() {
+      const vols = ((state.topo || {}).nodes || [])
+        .filter((n) => n.kind === "volume")
+        .map((n) => (n.meta && n.meta.pod) || n.id.replace(/^volume-/, ""))
+        .filter(Boolean)
+        .sort((a, b) => {
+          const ia = Number((a.match(/-(\d+)$/) || [])[1] || -1);
+          const ib = Number((b.match(/-(\d+)$/) || [])[1] || -1);
+          return ia - ib;
+        });
+      return vols.length ? vols[vols.length - 1] : "";
+    }
+
+    async function deleteDataNode(pod) {
+      const last = lastVolumePod();
+      if (last && pod !== last) {
+        toast(`StatefulSet 只能删末尾节点：请删除 ${last}`, true);
+        return;
+      }
+      const node = ((state.topo || {}).nodes || []).find(
+        (n) => n.kind === "volume" && ((n.meta && n.meta.pod) || n.id.replace(/^volume-/, "")) === pod
+      );
+      if (node && node.meta && node.meta.online) {
+        toast(`${pod} 仍在线，请先下线后再删除`, true);
+        return;
+      }
+      if (!confirm(`删除数据节点 ${pod}？\n须先下线；仅支持删除末尾 ordinal；会缩容 StatefulSet 并从 Clerk 注销。`))
+        return;
+      try {
+        const j = await api("/admin/api/ops/delete-data-node", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pod }),
+        });
+        toast(`已删除 ${j.removed_pod || pod}`);
+        await loadStatus();
+      } catch (e) {
+        toast(String(e.message || e), true);
+      }
+    }
+
+    function topoViewBoxSize(svg) {
+      const vb = (svg.getAttribute("viewBox") || "0 0 960 560").split(/\s+/).map(Number);
+      return { W: vb[2] || 960, H: vb[3] || 560 };
+    }
+
+    function bindTopoDrag() {
+      const svg = document.getElementById("topoSvg");
+      if (svg._topoBound) return;
+      svg._topoBound = true;
+      svg.addEventListener("pointermove", (ev) => {
+        if (!state.topoDrag) return;
+        const pt = svgPoint(svg, ev);
+        const drag = state.topoDrag;
+        if (
+          !drag.moved &&
+          (Math.abs(pt.x - drag.startX) > 4 || Math.abs(pt.y - drag.startY) > 4)
+        ) {
+          drag.moved = true;
+        }
+        const { id, dx, dy } = drag;
+        const { W, H } = topoViewBoxSize(svg);
+        const x = Math.max(70, Math.min(W - 70, pt.x - dx));
+        const y = Math.max(40, Math.min(H - 40, pt.y - dy));
+        state.topoPos[id] = { x, y };
+        const g = svg.querySelector(`.topo-node[data-id="${CSS.escape(id)}"]`);
+        if (g) g.setAttribute("transform", `translate(${x}, ${y})`);
+        updateTopoEdges();
+      });
+      const end = () => {
+        if (!state.topoDrag) return;
+        const { id, moved } = state.topoDrag;
+        state.topoDrag = null;
+        if (moved) {
+          state.topoLayoutCustom = true;
+          saveTopoPos();
+        }
+        if (!moved) openNodeModal(id);
+      };
+      svg.addEventListener("pointerup", end);
+      svg.addEventListener("pointercancel", end);
+    }
+
+    function closeNodeModal() {
+      document.getElementById("nodeModal").classList.remove("show");
+    }
+
+    function openNodeModal(nodeId) {
+      const node = ((state.topo || {}).nodes || []).find((n) => n.id === nodeId);
+      if (!node) return;
+      const title = document.getElementById("nodeModalTitle");
+      const body = document.getElementById("nodeModalBody");
+      title.textContent = node.label || node.id;
+      if (node.kind === "volume") {
+        body.innerHTML = renderVolumeNodeOps(node);
+      } else if (node.kind === "filer" || node.kind === "s3") {
+        body.innerHTML = renderFilerNodeOps(node);
+      } else if (node.kind === "clerk") {
+        const role = (node.meta && node.meta.raft_role) || "—";
+        body.innerHTML = `<p>Clerk 节点只读，禁止从此处添加/删除。</p>
+          <p>角色：<code>${esc(role)}</code> · 状态：<code>${esc(node.status || "—")}</code></p>
+          <p class="ops-preview">${esc(node.url || "")}</p>`;
+      } else {
+        body.innerHTML = `<p>${esc(node.kind)} · ${esc(node.status || "")}</p>`;
+      }
+      document.getElementById("nodeModal").classList.add("show");
+      bindNodeModalActions(node);
+    }
+
+    function renderVolumeNodeOps(node) {
+      const pod = (node.meta && node.meta.pod) || node.id.replace(/^volume-/, "");
+      const online = !!(node.meta && node.meta.online);
+      const kn = (node.meta && node.meta.kubernetes_node) || "—";
+      const replicaOf = (node.meta && node.meta.replica_of) || "";
+      const volumeNodes = ((state.topo || {}).nodes || [])
+        .filter((n) => n.kind === "volume")
+        .map((n) => ({
+          pod: (n.meta && n.meta.pod) || n.id.replace(/^volume-/, ""),
+          replicaOf: (n.meta && n.meta.replica_of) || "",
+          online: !!(n.meta && n.meta.online),
+        }))
+        .filter((x) => x.pod);
+      // Sources: any other data node (chaining allowed). Each node has at most one source.
+      const others = volumeNodes.filter((x) => x.pod !== pod);
+      // Nodes that already replicate this one (fan-out).
+      const myReplicas = volumeNodes.filter((x) => x.replicaOf === pod);
+      // Free offline nodes that can be added as another replica of this node.
+      const addCandidates = volumeNodes.filter(
+        (x) => x.pod !== pod && !x.replicaOf && !x.online
+      );
+      const hasReplica = !!replicaOf;
+      const canSetReplica = !online && !hasReplica;
+      const canAddReplica = addCandidates.length > 0;
+      const opts = hasReplica
+        ? `<option value="${esc(replicaOf)}" selected>${esc(replicaOf)}</option>`
+        : `<option value="">选择副本源…</option>` +
+          others.map((x) => `<option value="${esc(x.pod)}">${esc(x.pod)}</option>`).join("");
+      const addOpts =
+        `<option value="">选择离线节点…</option>` +
+        addCandidates.map((x) => `<option value="${esc(x.pod)}">${esc(x.pod)}</option>`).join("");
+      const myReplicaList = myReplicas.length
+        ? myReplicas
+            .map((x) => `<code>${esc(x.pod)}</code>${x.online ? "" : "（离线）"}`)
+            .join("、")
+        : "无";
+      const vols = (node.meta && node.meta.volumes) || [];
+      const volRows = vols.length
+        ? vols
+            .map((s) => {
+              const st = s.state || (s.online === false ? "offline" : "writable");
+              return `<tr>
+                <td>#${esc(s.id)}</td>
+                <td><code>${esc(st)}</code></td>
+                <td><code>${esc(s.replication || "000")}</code></td>
+                <td>${esc(s.size || 0)}</td>
+              </tr>`;
+            })
+            .join("")
+        : `<tr><td colspan="4">暂无数据卷</td></tr>`;
+      const replicaHint = replicaOf
+        ? `<span style="color:#7ab6ff">当前副本源 <code>${esc(replicaOf)}</code>${online ? "（已上线，不可再改）" : "（离线可清除后换源）"}</span>`
+        : online
+          ? "未挂到其它节点；已上线后不可再设为自己的副本源"
+          : "未挂到其它节点（离线时可设为某一个节点的副本）";
+      return `
+        <p>${esc(pod)} @ ${esc(kn)} · <strong>${online ? "在线" : "离线"}</strong></p>
+        <p class="ops-help" style="margin:0.35rem 0">${replicaHint}</p>
+        <p class="ops-help" style="margin:0.2rem 0">本节点的副本（可多个）：${myReplicaList}</p>
+        <div class="ops-row" style="margin:0.6rem 0">
+          <button type="button" class="btn ${online ? "" : "primary"}" data-act="node-online" data-online="${online ? "0" : "1"}">${online ? "下线节点" : "上线节点"}</button>
+          <button type="button" class="btn" data-act="node-delete" ${pod === lastVolumePod() && !online ? "" : "disabled"} title="${pod !== lastVolumePod() ? "只能删除末尾节点" : online ? "请先下线再删除" : ""}">删除节点</button>
+        </div>
+        <div class="ops-row" style="margin:0.6rem 0;flex-wrap:wrap">
+          <label>添加副本</label>
+          <select id="nodeAddReplica" style="min-width:10rem" ${canAddReplica ? "" : "disabled"}>${addOpts}</select>
+          <button type="button" class="btn primary" data-act="replica-add" ${canAddReplica ? "" : "disabled"}>Heal</button>
+        </div>
+        <div class="ops-row" style="margin:0.6rem 0;flex-wrap:wrap">
+          <label>设为副本</label>
+          <select id="nodeReplicaOf" style="min-width:10rem" ${canSetReplica ? "" : "disabled"}>${opts}</select>
+          <button type="button" class="btn primary" data-act="replica-set" ${canSetReplica ? "" : "disabled"}>应用</button>
+          <button type="button" class="btn" data-act="replica-clear" ${hasReplica && !online ? "" : "disabled"} title="${online && hasReplica ? "上线后不可改副本关系" : ""}">清除</button>
+        </div>
+        <p class="ops-help" style="margin:0.2rem 0">一源可挂多个副本；每个节点只归属一个源。仅离线目标可设/清；上线后锁定。允许链式（A←B←C），禁止成环。</p>
+        <table class="repl-table" style="margin-top:0.4rem">
+          <thead><tr><th>卷</th><th>状态</th><th>XYZ</th><th>大小</th></tr></thead>
+          <tbody>${volRows}</tbody>
+        </table>`;
+    }
+
+    function renderFilerNodeOps(node) {
+      const pol = (state.assignPolicy && state.assignPolicy.policy) || "random";
+      const opts = [
+        ["random", "随机"],
+        ["round_robin", "循环"],
+        ["free_disk", "按磁盘空闲加权"],
+        ["least_size", "优先较空卷"],
+      ]
+        .map(
+          ([id, label]) =>
+            `<option value="${id}" ${id === pol ? "selected" : ""}>${label}</option>`
+        )
+        .join("");
+      return `
+        <p>Filer（S3 + HTTP/WebDAV）· 状态 <code>${esc(node.status || "—")}</code></p>
+        <p class="ops-preview">${esc(node.url || "")}</p>
+        <div class="ops-row" style="flex-wrap:wrap">
+          <label>分配策略</label>
+          <select id="nodeAssignPolicy" style="min-width:10rem">${opts}</select>
+          <button type="button" class="btn primary" data-act="filer-assign-policy">应用</button>
+        </div>
+        <p class="ops-help" style="margin:0.35rem 0 0">写流量经 Filer 时，Clerk 按此策略在可写卷中选型（集群级，Raft 持久化）。Filer 副本数请用 Helm / kubectl 调整；数据节点上下线请点 Volume 节点。</p>`;
+    }
+
+    function bindNodeModalActions(node) {
+      const body = document.getElementById("nodeModalBody");
+      const pod = (node.meta && node.meta.pod) || node.id.replace(/^volume-/, "");
+      body.querySelectorAll("[data-act]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const act = btn.getAttribute("data-act");
+          try {
+            if (act === "node-online") {
+              await setNodeOnline(pod, btn.getAttribute("data-online") === "1");
+              closeNodeModal();
+            } else if (act === "node-delete") {
+              await deleteDataNode(pod);
+              closeNodeModal();
+            } else if (act === "replica-add") {
+              const target = (document.getElementById("nodeAddReplica") || {}).value || "";
+              if (!target) {
+                toast("请选择要挂为本节点副本的离线数据节点", true);
+                return;
+              }
+              if (!confirm(`将 ${target} 设为 ${pod} 的副本并 Heal？\n（一源可挂多个副本；目标须离线）`)) return;
+              const j = await api("/admin/api/ops/place-replicas", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  source_node_id: pod,
+                  target_node_id: target,
+                  heal: true,
+                }),
+              });
+              const n = (j.volume_ids && j.volume_ids.length) || 0;
+              toast(`已添加副本 ${target} ← ${pod}（${n} 个卷）`);
+              startHealPoll();
+              await loadStatus();
+              closeNodeModal();
+            } else if (act === "replica-set") {
+              if (node.meta && node.meta.online) {
+                toast("节点已上线，不能再设置副本关系", true);
+                return;
+              }
+              if (node.meta && node.meta.replica_of) {
+                toast(`已是 ${node.meta.replica_of} 的副本，请先清除再换源`, true);
+                return;
+              }
+              const source = (document.getElementById("nodeReplicaOf") || {}).value || "";
+              if (!source) {
+                toast("请选择副本源数据节点", true);
+                return;
+              }
+              if (!confirm(`将 ${pod} 设为 ${source} 的副本并 Heal？\n（须在上线前设置；一源可多副本，可链式，禁止成环）`)) return;
+              const j = await api("/admin/api/ops/place-replicas", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  source_node_id: source,
+                  target_node_id: pod,
+                  heal: true,
+                }),
+              });
+              const n = (j.volume_ids && j.volume_ids.length) || 0;
+              toast(`已设 ${pod} ← ${source}（${n} 个卷）`);
+              startHealPoll();
+              await loadStatus();
+              closeNodeModal();
+            } else if (act === "replica-clear") {
+              if (node.meta && node.meta.online) {
+                toast("节点已上线，副本关系已锁定，请先下线再清除", true);
+                return;
+              }
+              if (!confirm(`清除 ${pod} 的副本关系？`)) return;
+              await api("/admin/api/ops/clear-replica-of", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ node_id: pod }),
+              });
+              toast(`已清除 ${pod} 副本关系`);
+              await loadStatus();
+              closeNodeModal();
+            } else if (act === "filer-assign-policy" || act === "s3-assign-policy") {
+              const policy = (document.getElementById("nodeAssignPolicy") || {}).value || "random";
+              const j = await api("/admin/api/ops/assign-policy", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ policy }),
+              });
+              state.assignPolicy = j;
+              toast("分配策略已设为 " + (j.label || policy));
+              await loadStatus();
+              closeNodeModal();
+            }
+          } catch (e) {
+            toast(String(e.message || e), true);
+          }
+        });
+      });
+    }
+
+    function resetTopoLayout() {
+      state.topoPos = {};
+      state.topoLayoutCustom = false;
+      try {
+        localStorage.removeItem(TOPO_POS_KEY);
+      } catch (_) {}
+      api("/admin/api/topo-layout", { method: "DELETE" }).catch(() => {});
+      if (state.topo) renderTopo(state.topo);
+      toast("布局已复位");
+    }
+
+    async function loadAssignPolicy() {
+      try {
+        state.assignPolicy = await api("/admin/api/ops/assign-policy");
+      } catch (_) {
+        state.assignPolicy = null;
+      }
+    }
+
+    async function loadStatus() {
+      try {
+        const st = await api("/admin/api/status");
+        document.getElementById("authPill").textContent =
+          st.auth_enabled ? "auth: on" : "auth: open";
+      } catch (_) {
+        document.getElementById("authPill").textContent = "offline";
+      }
+      try {
+        const topo = await api("/admin/api/topology");
+        renderTopo(topo);
+      } catch (e) {
+        document.getElementById("cRaw").textContent = String(e.message || e);
+        toast(String(e.message || e), true);
+      }
+      await loadAssignPolicy();
+      await loadHealBandwidth();
+      await refreshHealStatus();
+    }
+
+    async function doScale() {
+      const info = scaleTargetInfo();
+      if (info.component === "clerk") {
+        toast("Clerk 禁止从此处扩缩", true);
+        return;
+      }
+      const verb = info.delta > 0 ? "扩容" : info.delta < 0 ? "缩容" : "设置";
+      if (
+        !confirm(
+          `${verb}确认\n\n` +
+            `对象：${info.ns}/${info.kindLabel} ${info.name}\n` +
+            `内容：${info.what}\n` +
+            `数量：${info.current} → ${info.target}\n` +
+            `预期 Pod：${info.pods.join(", ")}\n\n` +
+            `这不会修改数据副本 XYZ。`
+        )
+      ) {
+        return;
+      }
+      try {
+        const j = await api("/admin/api/ops/scale", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ component: info.component, replicas: info.target }),
+        });
+        document.getElementById("scaleCmd").textContent =
+          (j.applied ? "已执行\n" : "未自动执行（可手动）\n") +
+          `目标: ${info.ns}/${info.kindLabel} ${info.name} → ${info.target}\n` +
+          (j.kubectl || "") +
+          "\n" +
+          (j.helm || "") +
+          (j.error ? "\n" + j.error : "") +
+          (j.hint ? "\n" + j.hint : "");
+        toast(j.applied ? `${verb}已执行` : "已生成命令");
+        await loadStatus();
+      } catch (e) {
+        toast(String(e.message || e), true);
+      }
+    }
+
+    async function loadBuckets() {
+      const j = await api("/admin/api/fs/buckets");
+      state.buckets = j.buckets || [];
+      const box = document.getElementById("bucketList");
+      if (!state.buckets.length) {
+        box.innerHTML = '<div class="empty" style="padding:2rem 0.5rem"><p>还没有桶</p></div>';
+        return;
+      }
+      box.innerHTML = state.buckets.map((b) => `
+        <button type="button" class="bucket-item ${b === state.bucket ? "active" : ""}" data-bucket="${esc(b)}">
+          <span class="name">${esc(b)}</span>
+        </button>
+      `).join("");
+      box.querySelectorAll(".bucket-item").forEach((el) => {
+        el.addEventListener("click", () => selectBucket(el.dataset.bucket));
+      });
+    }
+
+    function esc(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function selectBucket(name) {
+      state.bucket = name;
+      state.prefix = "";
+      document.querySelectorAll(".bucket-item").forEach((el) => {
+        el.classList.toggle("active", el.dataset.bucket === name);
+      });
+      document.getElementById("btnDeleteBucket").disabled = !name;
+      document.getElementById("btnNewFolder").disabled = !name;
+      document.getElementById("btnUploadLabel").style.opacity = name ? 1 : 0.45;
+      loadObjects();
+    }
+
+    function renderCrumb() {
+      const el = document.getElementById("crumb");
+      if (!state.bucket) {
+        el.innerHTML = "选择一个桶";
+        document.getElementById("btnUp").disabled = true;
+        return;
+      }
+      const parts = state.prefix.split("/").filter(Boolean);
+      let html = `<a data-p="">${esc(state.bucket)}</a>`;
+      let acc = "";
+      parts.forEach((p) => {
+        acc += p + "/";
+        html += ` / <a data-p="${esc(acc)}">${esc(p)}</a>`;
+      });
+      el.innerHTML = html;
+      el.querySelectorAll("a").forEach((a) => {
+        a.addEventListener("click", () => {
+          state.prefix = a.getAttribute("data-p") || "";
+          loadObjects();
+        });
+      });
+      document.getElementById("btnUp").disabled = !state.prefix;
+    }
+
+    function syncViewModeBtn() {
+      const btn = document.getElementById("btnViewMode");
+      if (!btn) return;
+      btn.textContent = state.flat ? "扁平列表" : "目录视图";
+      btn.title = state.flat
+        ? "当前：扁平（显示全部 key）。点击切到目录视图"
+        : "当前：目录（按 / 分层）。点击切到扁平列表";
+    }
+
+    async function loadObjects() {
+      renderCrumb();
+      syncViewModeBtn();
+      const body = document.getElementById("fileBody");
+      const empty = document.getElementById("emptyState");
+      const hint = document.getElementById("listHint");
+      if (!state.bucket) {
+        body.innerHTML = "";
+        if (hint) hint.textContent = "";
+        empty.hidden = false;
+        empty.querySelector("h3").textContent = "未选择桶";
+        empty.querySelector("p").textContent = "从左侧选择或新建一个 Bucket";
+        return;
+      }
+      const q = new URLSearchParams({
+        bucket: state.bucket,
+        prefix: state.prefix,
+        delimiter: state.flat ? "" : "/",
+      });
+      const j = await api("/admin/api/fs/objects?" + q.toString());
+      const folders = state.flat ? [] : j.prefixes || [];
+      const objects = j.objects || [];
+      if (hint) {
+        const bits = [];
+        if (!state.flat && folders.length) bits.push(folders.length + " 文件夹");
+        bits.push(objects.length + " 对象");
+        hint.textContent = bits.join(" · ");
+      }
+      if (!folders.length && !objects.length) {
+        body.innerHTML = "";
+        empty.hidden = false;
+        empty.querySelector("h3").textContent = "空目录";
+        empty.querySelector("p").textContent = state.prefix
+          ? "当前前缀下没有对象。若在跑 s3_rw_loop，默认 put 后会删除；加 --keep 可保留。"
+          : "上传文件，或新建文件夹开始使用";
+        return;
+      }
+      empty.hidden = true;
+      const rows = [];
+      const folderSet = new Set(folders);
+      // Legacy empty-file "folders" (size 0, no extension) → treat as folders
+      if (!state.flat) {
+        objects.forEach((o) => {
+          const name = o.key.slice(state.prefix.length);
+          if (
+            o.size === 0 &&
+            name &&
+            !name.includes("/") &&
+            !name.includes(".") &&
+            !name.endsWith("/")
+          ) {
+            folderSet.add(state.prefix + name + "/");
+          }
+        });
+      }
+      [...folderSet].sort().forEach((p) => {
+        const name = p.slice(state.prefix.length).replace(/\/$/, "");
+        if (!name) return;
+        rows.push(`
+          <tr class="folder-row" data-open="${esc(p)}" style="cursor:pointer">
+            <td>
+              <div class="name-cell">
+                <span class="icon folder">📁</span>
+                <button type="button" class="linkish" data-open="${esc(p)}">${esc(name)}</button>
+              </div>
+            </td>
+            <td class="mono">—</td>
+            <td class="mono">文件夹</td>
+            <td>
+              <div class="row-actions">
+                <button type="button" class="danger" data-del-folder="${esc(p)}">删除</button>
+              </div>
+            </td>
+          </tr>
+        `);
+      });
+      objects.forEach((o) => {
+        const key = o.key;
+        const name = key.slice(state.prefix.length);
+        if (!name || name.endsWith("/")) return;
+        // skip if already shown as folder
+        if (folderSet.has(state.prefix + name + "/") || folderSet.has(key + "/")) return;
+        rows.push(`
+          <tr>
+            <td>
+              <div class="name-cell">
+                <span class="icon file">📄</span>
+                <span class="linkish" title="${esc(key)}">${esc(name)}</span>
+              </div>
+            </td>
+            <td class="mono">${fmtSize(o.size)}</td>
+            <td class="mono">${esc(o.mtime || "—")}</td>
+            <td>
+              <div class="row-actions">
+                <button type="button" data-dl="${esc(key)}">下载</button>
+                <button type="button" class="danger" data-del="${esc(key)}">删除</button>
+              </div>
+            </td>
+          </tr>
+        `);
+      });
+      body.innerHTML = rows.join("");
+      const openFolder = (p) => {
+        state.prefix = p;
+        state.flat = false;
+        syncViewModeBtn();
+        loadObjects().catch((e) => toast(String(e.message || e), true));
+      };
+      body.querySelectorAll("[data-open]").forEach((el) => {
+        el.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          openFolder(el.getAttribute("data-open"));
+        });
+      });
+      body.querySelectorAll("tr.folder-row").forEach((el) => {
+        el.addEventListener("click", (ev) => {
+          if (ev.target.closest("button.danger")) return;
+          openFolder(el.getAttribute("data-open"));
+        });
+      });
+      body.querySelectorAll("[data-del-folder]").forEach((el) => {
+        el.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          deleteFolder(el.getAttribute("data-del-folder"));
+        });
+      });
+      body.querySelectorAll("[data-dl]").forEach((el) => {
+        el.addEventListener("click", () => downloadObject(el.getAttribute("data-dl")));
+      });
+      body.querySelectorAll("[data-del]").forEach((el) => {
+        el.addEventListener("click", () => deleteObject(el.getAttribute("data-del")));
+      });
+    }
+
+    function downloadObject(key) {
+      const q = new URLSearchParams({ bucket: state.bucket, key });
+      window.open("/admin/api/fs/object?" + q.toString(), "_blank");
+    }
+
+    async function deleteObject(key) {
+      if (!confirm("删除对象？\n" + key)) return;
+      try {
+        const q = new URLSearchParams({ bucket: state.bucket, key });
+        await api("/admin/api/fs/object?" + q.toString(), { method: "DELETE" });
+        toast("已删除");
+        await loadObjects();
+      } catch (e) {
+        toast(String(e.message || e), true);
+      }
+    }
+
+    async function deleteFolder(prefix) {
+      const key = prefix.replace(/\/$/, "");
+      if (!confirm("删除空文件夹？\n" + key)) return;
+      try {
+        // try directory entry first, then legacy empty object
+        let ok = false;
+        try {
+          await api(
+            "/admin/api/fs/object?" + new URLSearchParams({ bucket: state.bucket, key }),
+            { method: "DELETE" }
+          );
+          ok = true;
+        } catch (_) {}
+        if (!ok) {
+          await api(
+            "/admin/api/fs/object?" +
+              new URLSearchParams({ bucket: state.bucket, key: prefix }),
+            { method: "DELETE" }
+          );
+        }
+        toast("已删除文件夹");
+        await loadObjects();
+      } catch (e) {
+        toast(String(e.message || e), true);
+      }
+    }
+
+    document.querySelectorAll(".tabs button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".tabs button").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        const tab = btn.dataset.tab;
+        document.getElementById("panel-files").classList.toggle("active", tab === "files");
+        document.getElementById("panel-cluster").classList.toggle("active", tab === "cluster");
+        if (tab === "cluster") loadStatus();
+      });
+    });
+
+    document.getElementById("btnTopoRefresh").addEventListener("click", () => {
+      loadStatus().catch((e) => toast(String(e.message || e), true));
+    });
+    document.getElementById("btnTopoReset").addEventListener("click", () => resetTopoLayout());
+    bindTopoDrag();
+    document.getElementById("btnAddDataNode").addEventListener("click", async () => {
+      await loadK8sNodes();
+      updateAddNodePreview();
+      document.getElementById("addNodeModal").classList.add("show");
+    });
+    document.getElementById("btnAddNodeCancel").addEventListener("click", () => {
+      document.getElementById("addNodeModal").classList.remove("show");
+    });
+    document.getElementById("btnAddNodeOk").addEventListener("click", () => addDataNode());
+    document.getElementById("addNodeK8s").addEventListener("change", () => updateAddNodePreview());
+    document.getElementById("addNodeModal").addEventListener("click", (ev) => {
+      if (ev.target.id === "addNodeModal") document.getElementById("addNodeModal").classList.remove("show");
+    });
+    document.getElementById("btnNodeModalClose").addEventListener("click", () => closeNodeModal());
+    document.getElementById("nodeModal").addEventListener("click", (ev) => {
+      if (ev.target.id === "nodeModal") closeNodeModal();
+    });
+    function healStatusClass(st) {
+      const s = String(st || "").toLowerCase();
+      if (s === "ok") return "heal-st-ok";
+      if (s === "running" || s === "queued") return s === "running" ? "heal-st-running" : "heal-st-queued";
+      if (s === "failed" || s.startsWith("failed") || s.startsWith("error")) return "heal-st-failed";
+      return "heal-st-queued";
+    }
+
+    function renderHealStatus(j) {
+      if (!j) return;
+      const pct = Number(j.overall_progress_pct || 0);
+      document.getElementById("healOverallPct").textContent =
+        (j.running ? "运行中 · " : j.tasks_total ? "完成 · " : "") +
+        pct.toFixed(0) + "% · " + (j.tasks_done || 0) + "/" + (j.tasks_total || 0);
+      document.getElementById("healBarFill").style.width = Math.max(0, Math.min(100, pct)) + "%";
+
+      let cur;
+      if (j.running && j.current_volume_id != null) {
+        const node = j.current_source_node || "—";
+        const tgt = j.current_target || "—";
+        cur = `正在治愈 <strong>volume ${esc(j.current_volume_id)}</strong>` +
+          ` · 源节点 <strong>${esc(node)}</strong>` +
+          ` · 目标 <code>${esc(tgt)}</code>`;
+      } else if (j.running) {
+        cur = "Heal 已启动，等待任务…";
+      } else if (j.tasks_total > 0) {
+        cur = `上次运行已结束（run #${esc(j.run_id)}）`;
+      } else {
+        cur = "尚未运行 heal";
+      }
+      document.getElementById("healCurrent").innerHTML = cur;
+
+      const body = document.getElementById("healTaskBody");
+      const tasks = j.tasks || [];
+      if (!tasks.length) {
+        body.innerHTML = `<tr><td colspan="5" style="color:var(--muted)">无任务</td></tr>`;
+        return;
+      }
+      body.innerHTML = tasks.map((t) => {
+        const targets = (t.targets || []).map((u) => esc(u)).join("<br>") || "—";
+        const tp = Number(t.progress_pct || 0).toFixed(0) + "%";
+        const bytes = t.bytes_total
+          ? ` <span style="color:var(--muted)">(${fmtSize(t.bytes_copied || 0)}/${fmtSize(t.bytes_total)})</span>`
+          : "";
+        return `<tr>
+          <td><code>${esc(t.volume_id)}</code></td>
+          <td><code>${esc(t.source_node || t.source_url || "—")}</code></td>
+          <td style="max-width:220px;word-break:break-all">${targets}</td>
+          <td>${tp}${bytes}</td>
+          <td class="${healStatusClass(t.status)}">${esc(t.status)}${t.message ? `<div style="color:var(--muted);font-size:0.72rem">${esc(t.message)}</div>` : ""}</td>
+        </tr>`;
+      }).join("");
+    }
+
+    function stopHealPoll() {
+      if (state.healPoll) {
+        clearInterval(state.healPoll);
+        state.healPoll = null;
+      }
+    }
+
+    async function refreshHealStatus() {
+      try {
+        const j = await api("/admin/api/ops/heal/status");
+        renderHealStatus(j);
+        if (j && j.running) startHealPoll();
+        else stopHealPoll();
+        return j;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function startHealPoll() {
+      if (state.healPoll) return;
+      state.healPoll = setInterval(() => { refreshHealStatus(); }, 1000);
+    }
+
+    function healBwMbps(j) {
+      if (!j || j.unlimited || !j.max_bps) return 0;
+      return typeof j.max_mbps === "number" ? j.max_mbps : j.max_bps / (1024 * 1024);
+    }
+
+    function formatHealBwHint(j) {
+      if (!j) return "—";
+      const mb = healBwMbps(j);
+      if (!mb) return "当前：不限速";
+      return `当前：${mb % 1 === 0 ? mb.toFixed(0) : mb.toFixed(2)} MB/s`;
+    }
+
+    async function loadHealBandwidth() {
+      try {
+        const j = await api("/admin/api/ops/heal-bandwidth");
+        const inp = document.getElementById("healBwMbps");
+        if (inp && j) inp.value = String(Math.round(healBwMbps(j) * 1000) / 1000);
+        const hint = document.getElementById("healBwHint");
+        if (hint) hint.textContent = formatHealBwHint(j);
+      } catch (_) { /* ignore */ }
+    }
+
+    document.getElementById("btnHealBwSave").addEventListener("click", async () => {
+      const inp = document.getElementById("healBwMbps");
+      const raw = inp ? Number(inp.value) : 0;
+      if (!Number.isFinite(raw) || raw < 0) {
+        toast("带宽须为 ≥ 0 的数字", true);
+        return;
+      }
+      try {
+        const j = await api("/admin/api/ops/heal-bandwidth", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ max_mbps: raw }),
+        });
+        const hint = document.getElementById("healBwHint");
+        if (hint) hint.textContent = formatHealBwHint(j);
+        toast(raw === 0 ? "Heal 带宽：不限速" : `Heal 带宽：${raw} MB/s`);
+      } catch (e) {
+        toast(String(e.message || e), true);
+      }
+    });
+
+    document.getElementById("btnHeal").addEventListener("click", async () => {
+      try {
+        const j = await api("/admin/api/ops/heal", { method: "POST" });
+        if (j && j.status) renderHealStatus(j.status);
+        if (j && j.busy) toast("Heal 已在运行中");
+        else if (j && j.started) toast(`Heal 已启动 · ${j.tasks_total} 个任务`);
+        else if (j && j.tasks_total === 0) toast("无需 heal");
+        else toast("已触发 heal");
+        startHealPoll();
+        await refreshHealStatus();
+        await loadStatus();
+      } catch (e) {
+        toast(String(e.message || e), true);
+      }
+    });
+    document.getElementById("btnBalance").addEventListener("click", async () => {
+      try {
+        await api("/admin/api/ops/balance", { method: "POST" });
+        toast("已触发 balance");
+        await loadStatus();
+      } catch (e) {
+        toast(String(e.message || e), true);
+      }
+    });
+
+    document.getElementById("btnNewBucket").addEventListener("click", async () => {
+      const name = prompt("新 Bucket 名称（小写字母/数字/连字符）");
+      if (!name) return;
+      try {
+        await api("/admin/api/fs/buckets/" + encodeURIComponent(name.trim()), { method: "PUT" });
+        toast("桶已创建");
+        await loadBuckets();
+        selectBucket(name.trim());
+      } catch (e) {
+        toast(String(e.message || e), true);
+      }
+    });
+
+    document.getElementById("btnDeleteBucket").addEventListener("click", async () => {
+      if (!state.bucket) return;
+      if (!confirm("删除空桶 " + state.bucket + "？")) return;
+      try {
+        await api("/admin/api/fs/buckets/" + encodeURIComponent(state.bucket), { method: "DELETE" });
+        toast("桶已删除");
+        state.bucket = null;
+        state.prefix = "";
+        await loadBuckets();
+        await loadObjects();
+      } catch (e) {
+        toast(String(e.message || e), true);
+      }
+    });
+
+    document.getElementById("btnRefresh").addEventListener("click", async () => {
+      try {
+        await loadBuckets();
+        await loadObjects();
+        toast("已刷新");
+      } catch (e) {
+        toast(String(e.message || e), true);
+      }
+    });
+
+    document.getElementById("btnViewMode").addEventListener("click", () => {
+      state.flat = !state.flat;
+      if (state.flat) state.prefix = "";
+      syncViewModeBtn();
+      loadObjects().catch((e) => toast(String(e.message || e), true));
+    });
+
+    document.getElementById("btnUp").addEventListener("click", () => {
+      if (!state.prefix) return;
+      const parts = state.prefix.split("/").filter(Boolean);
+      parts.pop();
+      state.prefix = parts.length ? parts.join("/") + "/" : "";
+      loadObjects();
+    });
+
+    document.getElementById("btnNewFolder").addEventListener("click", async () => {
+      if (!state.bucket) return;
+      const name = prompt("文件夹名称");
+      if (!name) return;
+      const key = state.prefix + name.replace(/^\/+|\/+$/g, "") + "/";
+      try {
+        await api("/admin/api/fs/object?" + new URLSearchParams({ bucket: state.bucket, key }), {
+          method: "PUT",
+          headers: { "Content-Type": "application/octet-stream" },
+          body: new Uint8Array(),
+        });
+        toast("文件夹已创建");
+        await loadObjects();
+      } catch (e) {
+        toast(String(e.message || e), true);
+      }
+    });
+
+    document.getElementById("fileInput").addEventListener("change", async (ev) => {
+      if (!state.bucket) {
+        toast("请先选择桶", true);
+        ev.target.value = "";
+        return;
+      }
+      const files = [...ev.target.files];
+      for (const f of files) {
+        const key = state.prefix + f.name;
+        try {
+          await api("/admin/api/fs/object?" + new URLSearchParams({ bucket: state.bucket, key }), {
+            method: "PUT",
+            headers: { "Content-Type": f.type || "application/octet-stream" },
+            body: f,
+          });
+          toast("已上传 " + f.name);
+        } catch (e) {
+          toast(f.name + ": " + (e.message || e), true);
+        }
+      }
+      ev.target.value = "";
+      await loadObjects();
+    });
+
+    (async () => {
+      syncViewModeBtn();
+      // Layout first so topology refresh keeps manual positions.
+      await loadTopoLayoutFromServer();
+      // Load buckets first so the file panel isn't empty while status/topology loads.
+      try {
+        await loadBuckets();
+        if (state.buckets[0]) selectBucket(state.buckets[0]);
+        else await loadObjects();
+      } catch (e) {
+        toast(String(e.message || e), true);
+      }
+      loadStatus().catch(() => {});
+      // Light auto-refresh so ephemeral puts (e.g. s3_rw_loop) are visible.
+      if (state.listPoll) clearInterval(state.listPoll);
+      state.listPoll = setInterval(() => {
+        if (!document.getElementById("panel-files").classList.contains("active")) return;
+        if (!state.bucket) return;
+        loadObjects().catch(() => {});
+      }, 2500);
+    })();
+  </script>
+</body>
+</html>

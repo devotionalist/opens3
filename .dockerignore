@@ -1,0 +1,9 @@
+target
+data
+.git
+.idea
+.vscode
+**/*.redb
+tmp
+*.md
+!README.md

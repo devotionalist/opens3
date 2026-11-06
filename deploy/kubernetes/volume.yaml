@@ -1,0 +1,134 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: opens3-volume-hl
+  namespace: opens3
+  labels:
+    app.kubernetes.io/name: opens3
+    app.kubernetes.io/component: volume
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  selector:
+    app.kubernetes.io/name: opens3
+    app.kubernetes.io/component: volume
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: opens3-volume
+  namespace: opens3
+  labels:
+    app.kubernetes.io/name: opens3
+    app.kubernetes.io/component: volume
+spec:
+  serviceName: opens3-volume-hl
+  replicas: 4
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opens3
+      app.kubernetes.io/component: volume
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: opens3
+        app.kubernetes.io/component: volume
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 50
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/component: volume
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: volume
+          image: opens3:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - volume
+            - --port=8080
+            - --ip=$(POD_IP)
+            - --node-id=$(POD_NAME)
+            - --dir=/data/volumes
+            - --clerk=$(CLERK_URL)
+            - --data-center=$(DATA_CENTER)
+            - --rack=$(RACK)
+            - --max-volumes=$(MAX_VOLUMES)
+            - --max-volume-size-mb=$(MAX_VOLUME_SIZE_MB)
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: CLERK_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: opens3-config
+                  key: CLERK_URL
+            - name: DATA_CENTER
+              valueFrom:
+                configMapKeyRef:
+                  name: opens3-config
+                  key: DATA_CENTER
+            - name: RACK
+              valueFrom:
+                configMapKeyRef:
+                  name: opens3-config
+                  key: RACK
+            - name: MAX_VOLUMES
+              valueFrom:
+                configMapKeyRef:
+                  name: opens3-config
+                  key: MAX_VOLUMES
+            - name: MAX_VOLUME_SIZE_MB
+              valueFrom:
+                configMapKeyRef:
+                  name: opens3-config
+                  key: MAX_VOLUME_SIZE_MB
+            - name: RUST_LOG
+              value: info
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: data
+              mountPath: /data/volumes
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 100Gi
