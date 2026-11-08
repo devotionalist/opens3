@@ -14,9 +14,20 @@ use tracing::warn;
 /// [cookie u32][size u32][flags u8][pad 3][ttl u32][file_key u64][payload...][crc32 u32]
 ///
 /// `.idx` is an **append-only log** of fixed 28-byte records (last entry for a
-/// `file_key` wins). Writes buffer into memory and flush in batches; `compact`
-/// rewrites a clean `.dat` + truncated `.idx`.
+/// `file_key` wins). Writes buffer into memory and flush in batches; vacuum
+/// rewrites live needles to `.cpd`/`.cpx`, then commits via rename (SeaweedFS-style).
 pub const IDX_ENTRY_SIZE: usize = 8 + 8 + 4 + 4 + 1 + 3;
+
+/// Marker that [`NeedleVolume::vacuum_compact`] completed and awaits commit.
+#[derive(Debug, Clone)]
+struct PendingVacuum {
+    #[allow(dead_code)]
+    before_size: u64,
+    #[allow(dead_code)]
+    new_size: u64,
+    #[allow(dead_code)]
+    new_index: HashMap<u64, NeedleIndex>,
+}
 
 /// Default: flush idx/dat every N mutations (1 = every op; higher = throughput).
 pub const DEFAULT_IDX_FLUSH_EVERY: u32 = 64;
@@ -123,6 +134,9 @@ pub struct NeedleVolume { // 针卷
     pub read_only: bool, // 只读
     pub sealed: bool, // 密封
     pub max_size: u64, // 最大大小
+    /// True between vacuum_compact and vacuum_commit/cleanup; blocks writes/deletes.
+    pub vacuuming: bool,
+    pending_vacuum: Option<PendingVacuum>,
 }
 
 fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<()> { // 读取精确位置 
@@ -183,9 +197,225 @@ impl NeedleVolume {
             read_only: false,
             sealed: false,
             max_size,
+            vacuuming: false,
+            pending_vacuum: None,
         };
         vol.load_index()?;
+        vol.reconcile_vacuum_files()?;
         Ok(vol)
+    }
+
+    fn cpd_path(&self) -> PathBuf {
+        self.dat_path.with_extension("cpd")
+    }
+
+    fn cpx_path(&self) -> PathBuf {
+        self.idx_path.with_extension("cpx")
+    }
+
+    fn cpc_path(&self) -> PathBuf {
+        self.dat_path.with_extension("cpc")
+    }
+
+    fn remove_vacuum_temps(cpd: &Path, cpx: &Path, cpc: &Path) {
+        let _ = std::fs::remove_file(cpd);
+        let _ = std::fs::remove_file(cpx);
+        let _ = std::fs::remove_file(cpc);
+    }
+
+    /// Crash recovery: finish commit if `.cpc` present; else drop orphan temps.
+    fn reconcile_vacuum_files(&mut self) -> Result<()> {
+        let cpd = self.cpd_path();
+        let cpx = self.cpx_path();
+        let cpc = self.cpc_path();
+        let has_cpc = cpc.exists();
+        let has_cpd = cpd.exists();
+        let has_cpx = cpx.exists();
+        if has_cpc && has_cpd && has_cpx {
+            warn!(
+                volume = self.id,
+                "vacuum: completing interrupted commit from .cpc marker"
+            );
+            self.apply_vacuum_swap(&cpd, &cpx, &cpc)?;
+            return Ok(());
+        }
+        if has_cpc || has_cpd || has_cpx {
+            warn!(
+                volume = self.id,
+                "vacuum: discarding incomplete temp files (no durable .cpc)"
+            );
+            Self::remove_vacuum_temps(&cpd, &cpx, &cpc);
+        }
+        self.vacuuming = false;
+        self.pending_vacuum = None;
+        Ok(())
+    }
+
+    fn write_idx_snapshot_to(path: &Path, index: &HashMap<u64, NeedleIndex>) -> Result<()> {
+        let mut buf = Vec::with_capacity(index.len() * IDX_ENTRY_SIZE);
+        for (k, v) in index {
+            Self::encode_idx_entry(*k, v, &mut buf);
+        }
+        let mut f = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)?;
+        f.write_all(&buf)?;
+        f.flush()?;
+        f.sync_data()?;
+        Ok(())
+    }
+
+    fn apply_vacuum_swap(&mut self, cpd: &Path, cpx: &Path, cpc: &Path) -> Result<()> {
+        // Ensure handles do not keep the old inode open across rename.
+        let _ = self.flush();
+        self.dat = open_rw(&self.dat_path, false)?;
+        self.idx = open_rw(&self.idx_path, false)?;
+        std::fs::rename(cpd, &self.dat_path)?;
+        std::fs::rename(cpx, &self.idx_path)?;
+        let _ = std::fs::remove_file(cpc);
+        self.dat = open_rw(&self.dat_path, false)?;
+        self.idx = open_rw(&self.idx_path, false)?;
+        self.idx_buf.clear();
+        self.dirty_ops = 0;
+        self.load_index()?;
+        self.vacuuming = false;
+        self.pending_vacuum = None;
+        self.dat.seek(SeekFrom::End(0))?;
+        Ok(())
+    }
+
+    /// Garbage ratio in `[0.0, 1.0]`: deleted / (live + deleted).
+    pub fn vacuum_check(&self) -> f64 {
+        let live = self.file_count;
+        let dead = self.deleted_count;
+        let total = live.saturating_add(dead);
+        if total == 0 {
+            0.0
+        } else {
+            dead as f64 / total as f64
+        }
+    }
+
+    /// Copy live needles to `.cpd` / `.cpx`. Does not replace `.dat`/`.idx` yet.
+    /// Blocks further writes until [`vacuum_commit`] or [`vacuum_cleanup`].
+    pub fn vacuum_compact(&mut self) -> Result<(u64, u64)> {
+        if self.vacuuming {
+            return Err(Error::Internal(format!(
+                "volume {} already vacuuming",
+                self.id
+            )));
+        }
+        self.flush()?;
+        let before = self.size;
+        let cpd = self.cpd_path();
+        let cpx = self.cpx_path();
+        let cpc = self.cpc_path();
+        Self::remove_vacuum_temps(&cpd, &cpx, &cpc);
+
+        let mut out = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&cpd)?;
+
+        let live: Vec<(u64, NeedleIndex)> = self
+            .index
+            .iter()
+            .filter(|(_, v)| !v.deleted)
+            .map(|(k, v)| (*k, v.clone()))
+            .collect();
+
+        let mut new_index = HashMap::with_capacity(live.len());
+        let mut new_size = 0u64;
+        for (file_key, old) in live {
+            let Ok(data) = self.read_needle(file_key, old.cookie) else {
+                continue;
+            };
+            let offset = new_size;
+            let size = (8 + data.len()) as u32;
+            let mut header = [0u8; NEEDLE_HEADER_SIZE];
+            header[0..4].copy_from_slice(&old.cookie.to_le_bytes());
+            header[4..8].copy_from_slice(&size.to_le_bytes());
+            out.write_all(&header)?;
+            out.write_all(&file_key.to_le_bytes())?;
+            out.write_all(&data)?;
+            out.write_all(&util::crc32(&data).to_le_bytes())?;
+            new_size += NEEDLE_HEADER_SIZE as u64 + size as u64 + NEEDLE_CHECKSUM_SIZE as u64;
+            new_index.insert(
+                file_key,
+                NeedleIndex {
+                    offset,
+                    size,
+                    cookie: old.cookie,
+                    deleted: false,
+                },
+            );
+        }
+        out.flush()?;
+        self.sync_mode.apply(&out)?;
+        drop(out);
+        Self::write_idx_snapshot_to(&cpx, &new_index)?;
+
+        self.vacuuming = true;
+        self.pending_vacuum = Some(PendingVacuum {
+            before_size: before,
+            new_size,
+            new_index,
+        });
+        Ok((before, new_size))
+    }
+
+    /// Atomically swap compacted files into place (writes `.cpc` marker first).
+    pub fn vacuum_commit(&mut self) -> Result<u64> {
+        if self.pending_vacuum.is_none() {
+            return Err(Error::InvalidArgument(format!(
+                "volume {}: vacuum_commit without vacuum_compact",
+                self.id
+            )));
+        }
+        let cpd = self.cpd_path();
+        let cpx = self.cpx_path();
+        let cpc = self.cpc_path();
+        if !cpd.exists() || !cpx.exists() {
+            self.vacuuming = false;
+            self.pending_vacuum = None;
+            return Err(Error::Internal(format!(
+                "volume {}: missing .cpd/.cpx for commit",
+                self.id
+            )));
+        }
+
+        // Durable commit marker before renames (SeaweedFS .cpc).
+        {
+            let mut m = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&cpc)?;
+            m.write_all(b"opens3-vacuum-commit\n")?;
+            m.flush()?;
+            m.sync_all()?;
+        }
+
+        self.apply_vacuum_swap(&cpd, &cpx, &cpc)?;
+        Ok(self.size)
+    }
+
+    /// Drop temp files and clear vacuuming (also after a failed/aborted compact).
+    pub fn vacuum_cleanup(&mut self) -> Result<()> {
+        let cpd = self.cpd_path();
+        let cpx = self.cpx_path();
+        let cpc = self.cpc_path();
+        if cpc.exists() && cpd.exists() && cpx.exists() {
+            // Incomplete commit — finish forward rather than discard.
+            return self.apply_vacuum_swap(&cpd, &cpx, &cpc).map(|_| ());
+        }
+        Self::remove_vacuum_temps(&cpd, &cpx, &cpc);
+        self.vacuuming = false;
+        self.pending_vacuum = None;
+        Ok(())
     }
 
     pub fn open(dir: &Path, id: u32, max_size: u64) -> Result<Self> {
@@ -418,6 +648,12 @@ impl NeedleVolume {
         if self.read_only || self.sealed { // 只读或密封
             return Err(Error::VolumeReadOnly(self.id));
         }
+        if self.vacuuming {
+            return Err(Error::Internal(format!(
+                "volume {} is vacuuming",
+                self.id
+            )));
+        }
         let need = NEEDLE_HEADER_SIZE as u64 + 8 + data.len() as u64 + NEEDLE_CHECKSUM_SIZE as u64;
         if self.size + need > self.max_size {
             return Err(Error::VolumeFull(self.id));
@@ -490,6 +726,12 @@ impl NeedleVolume {
     }
 
     pub fn delete_needle(&mut self, file_key: u64, cookie: u32) -> Result<()> {
+        if self.vacuuming {
+            return Err(Error::Internal(format!(
+                "volume {} is vacuuming",
+                self.id
+            )));
+        }
         let existing = self
             .index
             .get(&file_key)
@@ -513,66 +755,19 @@ impl NeedleVolume {
         Ok(())
     }
 
+    /// One-shot vacuum: compact → commit → cleanup (compatible with legacy callers).
     pub fn compact(&mut self) -> Result<(u64, u64)> {
-        self.flush()?;
-        let before = self.size;
-        let tmp_dat = self.dat_path.with_extension("dat.compact");
-        let mut out = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&tmp_dat)?;
-
-        let live: Vec<(u64, NeedleIndex)> = self
-            .index
-            .iter()
-            .filter(|(_, v)| !v.deleted)
-            .map(|(k, v)| (*k, v.clone()))
-            .collect();
-
-        let mut new_index = HashMap::with_capacity(live.len());
-        let mut new_size = 0u64;
-        for (file_key, old) in live {
-            let Ok(data) = self.read_needle(file_key, old.cookie) else {
-                continue;
-            };
-            let offset = new_size;
-            let size = (8 + data.len()) as u32;
-            let mut header = [0u8; NEEDLE_HEADER_SIZE];
-            header[0..4].copy_from_slice(&old.cookie.to_le_bytes());
-            header[4..8].copy_from_slice(&size.to_le_bytes());
-            out.write_all(&header)?;
-            out.write_all(&file_key.to_le_bytes())?;
-            out.write_all(&data)?;
-            out.write_all(&util::crc32(&data).to_le_bytes())?;
-            new_size += NEEDLE_HEADER_SIZE as u64 + size as u64 + NEEDLE_CHECKSUM_SIZE as u64;
-            new_index.insert(
-                file_key,
-                NeedleIndex {
-                    offset,
-                    size,
-                    cookie: old.cookie,
-                    deleted: false,
-                },
-            );
+        let (before, _) = self.vacuum_compact()?;
+        match self.vacuum_commit() {
+            Ok(after) => {
+                let _ = self.vacuum_cleanup();
+                Ok((before, after))
+            }
+            Err(e) => {
+                let _ = self.vacuum_cleanup();
+                Err(e)
+            }
         }
-        out.flush()?;
-        self.sync_mode.apply(&out)?;
-        drop(out);
-
-        // Drop the old .dat handle (via reassignment), replace the path, reopen.
-        self.dat = open_rw(&self.dat_path, false)?;
-        std::fs::rename(&tmp_dat, &self.dat_path)?;
-        self.dat = open_rw(&self.dat_path, false)?;
-
-        let file_count = new_index.len() as u64;
-        self.index = new_index;
-        self.size = new_size;
-        self.file_count = file_count;
-        self.deleted_count = 0;
-        self.rewrite_index_snapshot()?;
-        self.dat.seek(SeekFrom::End(0))?;
-        Ok((before, new_size))
     }
 
     pub fn set_read_only(&mut self, v: bool) {

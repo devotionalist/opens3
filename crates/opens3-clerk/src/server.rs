@@ -6,6 +6,9 @@ use crate::heal::{
     execute_balance, execute_heal, plan_balance, plan_heal, plan_heal_filtered,
     reconcile_node_fingerprints, HealTracker,
 };
+use crate::vacuum::{
+    execute_vacuum, plan_vacuum, plan_vacuum_filtered, VacuumConfig, VacuumTracker,
+};
 use crate::raft::{RaftLite, RaftRequest, TypeConfig};
 use axum::extract::{OriginalUri, Path, Query, State};
 use axum::http::{header, StatusCode, Uri};
@@ -39,6 +42,9 @@ pub struct ClerkServer {
     pub tls: Option<opens3_common::tls::TlsConfig>,
     /// Live heal job tracker (task list / current volume / progress).
     pub heal: HealTracker,
+    /// Live vacuum job tracker (leader process).
+    pub vacuum: VacuumTracker,
+    pub vacuum_config: VacuumConfig,
     /// Node ids currently running fingerprint reconcile after restart.
     pub reconciling: Arc<Mutex<HashSet<String>>>,
 }
@@ -97,6 +103,8 @@ impl ClerkServer {
             jwt_secret,
             tls,
             heal: HealTracker::new(),
+            vacuum: VacuumTracker::new(),
+            vacuum_config: VacuumConfig::from_env(),
             reconciling: Arc::new(Mutex::new(HashSet::new())),
         })
     }
@@ -160,6 +168,44 @@ impl ClerkServer {
             }
         });
 
+        let vacuum_master = self.clone();
+        tokio::spawn(async move {
+            let interval = Duration::from_secs(vacuum_master.vacuum_config.interval_secs.max(5));
+            loop {
+                tokio::time::sleep(interval).await;
+                if !vacuum_master.vacuum_config.enabled {
+                    continue;
+                }
+                if !vacuum_master.raft.is_leader() {
+                    continue;
+                }
+                let threshold = vacuum_master.vacuum_config.garbage_threshold;
+                let tasks = plan_vacuum(&vacuum_master.cluster, threshold);
+                vacuum_master
+                    .metrics
+                    .vacuum_tasks
+                    .set(tasks.len() as i64);
+                if tasks.is_empty() {
+                    continue;
+                }
+                if let Err(_busy) = vacuum_master.vacuum.try_begin(&tasks, threshold) {
+                    continue;
+                }
+                let _ = execute_vacuum(
+                    &vacuum_master.http,
+                    &tasks,
+                    Some(&vacuum_master.vacuum),
+                    threshold,
+                )
+                .await;
+                vacuum_master
+                    .metrics
+                    .vacuum_runs_total
+                    .with_label_values(&["ok"])
+                    .inc();
+            }
+        });
+
         let gauge_master = self.clone();
         tokio::spawn(async move {
             loop {
@@ -212,6 +258,8 @@ impl ClerkServer {
             .route("/cluster/leader", get(leader))
             .route("/cluster/heal", post(heal_now).get(heal_status))
             .route("/cluster/heal/status", get(heal_status))
+            .route("/cluster/vacuum", post(vacuum_now).get(vacuum_status))
+            .route("/cluster/vacuum/status", get(vacuum_status))
             .route(
                 "/cluster/heal-bandwidth",
                 get(heal_bandwidth_get).post(heal_bandwidth_set),
@@ -944,6 +992,94 @@ async fn grow_volumes(
 
 async fn heal_status(State(st): State<AppState>) -> impl IntoResponse {
     Json(st.clerk.heal.snapshot()).into_response()
+}
+
+async fn vacuum_status(State(st): State<AppState>) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "config": {
+            "enabled": st.clerk.vacuum_config.enabled,
+            "interval_secs": st.clerk.vacuum_config.interval_secs,
+            "garbage_threshold": st.clerk.vacuum_config.garbage_threshold,
+            "max_parallel_volumes": st.clerk.vacuum_config.max_parallel_volumes,
+        },
+        "status": st.clerk.vacuum.snapshot(),
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct VacuumQuery {
+    threshold: Option<f64>,
+    volume_id: Option<u32>,
+}
+
+async fn vacuum_now(
+    State(st): State<AppState>,
+    OriginalUri(uri): OriginalUri,
+    Query(q): Query<VacuumQuery>,
+) -> impl IntoResponse {
+    if !st.clerk.raft.is_leader() {
+        return redirect_leader(&st, &uri);
+    }
+    let threshold = q
+        .threshold
+        .unwrap_or(st.clerk.vacuum_config.garbage_threshold)
+        .clamp(0.0, 1.0);
+    let only = q.volume_id.map(|id| vec![id]);
+    let tasks = plan_vacuum_filtered(
+        &st.clerk.cluster,
+        threshold,
+        only.as_deref(),
+    );
+    st.clerk.metrics.vacuum_tasks.set(tasks.len() as i64);
+    if tasks.is_empty() {
+        return Json(serde_json::json!({
+            "ok": true,
+            "started": false,
+            "tasks_total": 0,
+            "message": "nothing to vacuum",
+            "threshold": threshold,
+            "status": st.clerk.vacuum.snapshot(),
+        }))
+        .into_response();
+    }
+    match st.clerk.vacuum.try_begin(&tasks, threshold) {
+        Ok(run_id) => {
+            let master = st.clerk.clone();
+            let planned = tasks.clone();
+            tokio::spawn(async move {
+                let _ = execute_vacuum(
+                    &master.http,
+                    &planned,
+                    Some(&master.vacuum),
+                    threshold,
+                )
+                .await;
+                master
+                    .metrics
+                    .vacuum_runs_total
+                    .with_label_values(&["ok"])
+                    .inc();
+            });
+            Json(serde_json::json!({
+                "ok": true,
+                "started": true,
+                "run_id": run_id,
+                "tasks_total": tasks.len(),
+                "threshold": threshold,
+                "status": st.clerk.vacuum.snapshot(),
+            }))
+            .into_response()
+        }
+        Err(busy) => Json(serde_json::json!({
+            "ok": true,
+            "started": false,
+            "busy": true,
+            "message": "vacuum already running",
+            "status": busy,
+        }))
+        .into_response(),
+    }
 }
 
 async fn heal_now(

@@ -254,14 +254,21 @@ HashMap[B].deleted = true                 ← reads immediately NotFound
 
 
 
-### Compact
+### Vacuum / Compact
+
+Four phases (temps `.cpd`/`.cpx`, commit marker `.cpc`):
+
+1. **check** — `garbage_ratio = deleted / (live + deleted)`
+2. **compact** — copy live needles to `.cpd` + compact `.cpx` (writes blocked)
+3. **commit** — write `.cpc`, then rename over `.dat`/`.idx` and reload
+4. **cleanup** — remove leftover temps
+
+One-shot `compact()` = compact → commit → cleanup. Clerk leader can auto-schedule by threshold.
 
 ```text
 old .dat:  [A][B✗][C][B' live]   →  new .dat: [A][C][B']
 old .idx:  many log entries / holes →  new .idx: three compact records
 ```
-
-Walk live needles → rewrite a clean `.dat` → truncate and rewrite a compact `.idx`.
 
 ## Relation to FileId
 

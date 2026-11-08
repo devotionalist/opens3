@@ -98,13 +98,31 @@ curl -X POST http://CLERK:9333/vol/ec/{volumeId}
 
 EC artifacts land in `{dir}/ec/{id}.ec.*`.
 
-## Compact (reclaim deleted needles)
+## Vacuum / Compact (reclaim deleted needles)
+
+Volume four-phase protocol (writes blocked during Compact):
+
+```bash
+curl -X POST http://VOLUME:8080/admin/vacuum/{volumeId}/check
+curl -X POST http://VOLUME:8080/admin/vacuum/{volumeId}/compact
+curl -X POST http://VOLUME:8080/admin/vacuum/{volumeId}/commit
+curl -X POST http://VOLUME:8080/admin/vacuum/{volumeId}/cleanup
+```
+
+One-shot (runs all phases):
 
 ```bash
 curl -X POST http://VOLUME:8080/admin/compact/{volumeId}
 ```
 
-Returns `before` / `after` byte counts. Prefer off-peak on volumes with high delete rates.
+Clerk **leader** auto-schedules from heartbeat `deleted_count` (default threshold 0.3, interval 60s):
+
+```bash
+# Env: OPENS3_VACUUM_ENABLED / OPENS3_VACUUM_INTERVAL_SECS /
+#      OPENS3_VACUUM_GARBAGE_THRESHOLD / OPENS3_VACUUM_MAX_PARALLEL
+curl -X POST 'http://CLERK:9333/cluster/vacuum'
+curl -X GET  'http://CLERK:9333/cluster/vacuum/status'
+```
 
 ## Direct blob debugging (bypass S3)
 

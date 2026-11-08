@@ -19,6 +19,10 @@ service VolumeService {
   rpc DeleteNeedle(DeleteNeedleRequest) returns (DeleteNeedleResponse);
   rpc ReplicateNeedle(ReplicateNeedleRequest) returns (ReplicateNeedleResponse);
   rpc CompactVolume(CompactVolumeRequest) returns (CompactVolumeResponse);
+  rpc VacuumVolumeCheck(VacuumVolumeCheckRequest) returns (VacuumVolumeCheckResponse);
+  rpc VacuumVolumeCompact(VacuumVolumeCompactRequest) returns (VacuumVolumeCompactResponse);
+  rpc VacuumVolumeCommit(VacuumVolumeCommitRequest) returns (VacuumVolumeCommitResponse);
+  rpc VacuumVolumeCleanup(VacuumVolumeCleanupRequest) returns (VacuumVolumeCleanupResponse);
   rpc EncodeEc(EncodeEcRequest) returns (EncodeEcResponse);
   rpc Health(HealthRequest) returns (HealthResponse);
 }
@@ -200,6 +204,39 @@ message CompactVolumeResponse {
   uint64 before_size = 1;
   uint64 after_size = 2;
 }
+
+message VacuumVolumeCheckRequest {
+  uint32 volume_id = 1;
+}
+
+message VacuumVolumeCheckResponse {
+  double garbage_ratio = 1;
+}
+
+message VacuumVolumeCompactRequest {
+  uint32 volume_id = 1;
+}
+
+message VacuumVolumeCompactResponse {
+  uint64 before_size = 1;
+  uint64 processed_bytes = 2;
+}
+
+message VacuumVolumeCommitRequest {
+  uint32 volume_id = 1;
+}
+
+message VacuumVolumeCommitResponse {
+  uint64 volume_size = 1;
+  bool is_read_only = 2;
+}
+
+message VacuumVolumeCleanupRequest {
+  uint32 volume_id = 1;
+}
+
+message VacuumVolumeCleanupResponse {}
+
 
 message EncodeEcRequest {
   uint32 volume_id = 1;

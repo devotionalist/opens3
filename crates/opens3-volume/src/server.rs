@@ -231,6 +231,10 @@ impl VolumeServer {
             .route("/admin/create_volume/{id}", post(create_volume_handler))
             .route("/admin/seal/{id}", post(seal_handler))
             .route("/admin/compact/{id}", post(compact_handler))
+            .route("/admin/vacuum/{id}/check", post(vacuum_check_handler))
+            .route("/admin/vacuum/{id}/compact", post(vacuum_compact_handler))
+            .route("/admin/vacuum/{id}/commit", post(vacuum_commit_handler))
+            .route("/admin/vacuum/{id}/cleanup", post(vacuum_cleanup_handler))
             .route("/admin/ec/{id}", post(ec_handler))
             .route("/admin/replicate_volume/{id}", post(replicate_volume_handler))
             .route("/admin/import_volume", post(import_volume_handler))
@@ -926,6 +930,113 @@ async fn compact_handler(State(st): State<AppState>, Path(id): Path<u32>) -> imp
     }
 }
 
+async fn vacuum_check_handler(State(st): State<AppState>, Path(id): Path<u32>) -> impl IntoResponse {
+    match st.server.store.vacuum_check(id) {
+        Ok(garbage_ratio) => {
+            st.server
+                .metrics
+                .vacuum_total
+                .with_label_values(&["check", "ok"])
+                .inc();
+            Json(serde_json::json!({"garbage_ratio": garbage_ratio})).into_response()
+        }
+        Err(e) => {
+            st.server
+                .metrics
+                .vacuum_total
+                .with_label_values(&["check", "error"])
+                .inc();
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn vacuum_compact_handler(
+    State(st): State<AppState>,
+    Path(id): Path<u32>,
+) -> impl IntoResponse {
+    match st.server.store.vacuum_compact(id) {
+        Ok((before_size, processed_bytes)) => {
+            st.server
+                .metrics
+                .vacuum_total
+                .with_label_values(&["compact", "ok"])
+                .inc();
+            Json(serde_json::json!({
+                "before_size": before_size,
+                "processed_bytes": processed_bytes,
+            }))
+            .into_response()
+        }
+        Err(e) => {
+            st.server
+                .metrics
+                .vacuum_total
+                .with_label_values(&["compact", "error"])
+                .inc();
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn vacuum_commit_handler(
+    State(st): State<AppState>,
+    Path(id): Path<u32>,
+) -> impl IntoResponse {
+    match st.server.store.vacuum_commit(id) {
+        Ok(volume_size) => {
+            let is_read_only = st
+                .server
+                .store
+                .volume_stats(id)
+                .map(|(_, _, _, ro, _)| ro)
+                .unwrap_or(false);
+            st.server
+                .metrics
+                .vacuum_total
+                .with_label_values(&["commit", "ok"])
+                .inc();
+            Json(serde_json::json!({
+                "volume_size": volume_size,
+                "is_read_only": is_read_only,
+            }))
+            .into_response()
+        }
+        Err(e) => {
+            st.server
+                .metrics
+                .vacuum_total
+                .with_label_values(&["commit", "error"])
+                .inc();
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+async fn vacuum_cleanup_handler(
+    State(st): State<AppState>,
+    Path(id): Path<u32>,
+) -> impl IntoResponse {
+    match st.server.store.vacuum_cleanup(id) {
+        Ok(()) => {
+            st.server
+                .metrics
+                .vacuum_total
+                .with_label_values(&["cleanup", "ok"])
+                .inc();
+            Json(serde_json::json!({"ok": true})).into_response()
+        }
+        Err(e) => {
+            st.server
+                .metrics
+                .vacuum_total
+                .with_label_values(&["cleanup", "error"])
+                .inc();
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct EcQuery {
     data_shards: Option<usize>,
@@ -1112,6 +1223,69 @@ impl VolumeService for GrpcVolume {
             before_size,
             after_size,
         }))
+    }
+
+    async fn vacuum_volume_check(
+        &self,
+        req: Request<VacuumVolumeCheckRequest>,
+    ) -> std::result::Result<Response<VacuumVolumeCheckResponse>, Status> {
+        let id = req.into_inner().volume_id;
+        let garbage_ratio = self
+            .0
+            .store
+            .vacuum_check(id)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(VacuumVolumeCheckResponse { garbage_ratio }))
+    }
+
+    async fn vacuum_volume_compact(
+        &self,
+        req: Request<VacuumVolumeCompactRequest>,
+    ) -> std::result::Result<Response<VacuumVolumeCompactResponse>, Status> {
+        let id = req.into_inner().volume_id;
+        let (before_size, processed_bytes) = self
+            .0
+            .store
+            .vacuum_compact(id)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(VacuumVolumeCompactResponse {
+            before_size,
+            processed_bytes,
+        }))
+    }
+
+    async fn vacuum_volume_commit(
+        &self,
+        req: Request<VacuumVolumeCommitRequest>,
+    ) -> std::result::Result<Response<VacuumVolumeCommitResponse>, Status> {
+        let id = req.into_inner().volume_id;
+        let volume_size = self
+            .0
+            .store
+            .vacuum_commit(id)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        let is_read_only = self
+            .0
+            .store
+            .volume_stats(id)
+            .map(|(_, _, _, ro, _)| ro)
+            .unwrap_or(false);
+        Ok(Response::new(VacuumVolumeCommitResponse {
+            volume_size,
+            is_read_only,
+        }))
+    }
+
+    async fn vacuum_volume_cleanup(
+        &self,
+        req: Request<VacuumVolumeCleanupRequest>,
+    ) -> std::result::Result<Response<VacuumVolumeCleanupResponse>, Status> {
+        let id = req.into_inner().volume_id;
+        self.0
+            .store
+            .vacuum_cleanup(id)
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(VacuumVolumeCleanupResponse {}))
     }
 
     async fn encode_ec(

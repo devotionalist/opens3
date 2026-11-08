@@ -123,6 +123,30 @@ impl VolumeStore {
         g.compact()
     }
 
+    pub fn vacuum_check(&self, volume_id: u32) -> Result<f64> {
+        let vol = self.get(volume_id)?;
+        let ratio = vol.read().vacuum_check();
+        Ok(ratio)
+    }
+
+    pub fn vacuum_compact(&self, volume_id: u32) -> Result<(u64, u64)> {
+        let vol = self.get(volume_id)?;
+        let mut g = vol.write();
+        g.vacuum_compact()
+    }
+
+    pub fn vacuum_commit(&self, volume_id: u32) -> Result<u64> {
+        let vol = self.get(volume_id)?;
+        let mut g = vol.write();
+        g.vacuum_commit()
+    }
+
+    pub fn vacuum_cleanup(&self, volume_id: u32) -> Result<()> {
+        let vol = self.get(volume_id)?;
+        let mut g = vol.write();
+        g.vacuum_cleanup()
+    }
+
     pub fn seal(&self, volume_id: u32) -> Result<()> {
         let vol = self.get(volume_id)?;
         vol.write().seal();
@@ -147,10 +171,9 @@ impl VolumeStore {
 
     pub fn drop_volume_files(&self, id: u32) -> Result<()> {
         self.volumes.lock().remove(&id);
-        let dat = self.dir.join(format!("{id}.dat"));
-        let idx = self.dir.join(format!("{id}.idx"));
-        let _ = std::fs::remove_file(dat);
-        let _ = std::fs::remove_file(idx);
+        for ext in ["dat", "idx", "cpd", "cpx", "cpc"] {
+            let _ = std::fs::remove_file(self.dir.join(format!("{id}.{ext}")));
+        }
         Ok(())
     }
 

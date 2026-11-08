@@ -4,6 +4,7 @@ pub mod cluster;
 pub mod heal;
 pub mod raft;
 pub mod server;
+pub mod vacuum;
 
 pub use cluster::{
     AssignPolicy, ClusterSnapshot, ClusterState, HeartbeatOutcome, VolumeFingerprint,

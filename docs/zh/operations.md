@@ -98,13 +98,31 @@ curl -X POST http://CLERK:9333/vol/ec/{volumeId}
 
 EC 产物在 `{dir}/ec/{id}.ec.*`。
 
-## Compact（回收删除针脚）
+## Vacuum / Compact（回收删除针脚）
+
+Volume 侧四阶段（Compact 期间该卷禁写）：
+
+```bash
+curl -X POST http://VOLUME:8080/admin/vacuum/{volumeId}/check    # garbage_ratio
+curl -X POST http://VOLUME:8080/admin/vacuum/{volumeId}/compact  # 写 .cpd/.cpx
+curl -X POST http://VOLUME:8080/admin/vacuum/{volumeId}/commit   # .cpc + rename
+curl -X POST http://VOLUME:8080/admin/vacuum/{volumeId}/cleanup
+```
+
+一键（内部串联四阶段）：
 
 ```bash
 curl -X POST http://VOLUME:8080/admin/compact/{volumeId}
 ```
 
-返回 `before` / `after` 字节数。建议在低峰对删除率高的卷执行。
+Clerk **leader** 按心跳 `deleted_count` 自动调度（默认阈值 0.3，间隔 60s）：
+
+```bash
+# 环境变量：OPENS3_VACUUM_ENABLED / OPENS3_VACUUM_INTERVAL_SECS /
+#           OPENS3_VACUUM_GARBAGE_THRESHOLD / OPENS3_VACUUM_MAX_PARALLEL
+curl -X POST 'http://CLERK:9333/cluster/vacuum'
+curl -X GET  'http://CLERK:9333/cluster/vacuum/status'
+```
 
 ## 直接 Blob 调试（绕过 S3）
 

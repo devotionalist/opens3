@@ -253,14 +253,21 @@ HashMap[B].deleted = true                 ← 读立即 NotFound
 
 
 
-### Compact
+### Vacuum / Compact
+
+四阶段（临时文件 `.cpd` / `.cpx`，提交标记 `.cpc`）：
+
+1. **check** — `garbage_ratio = deleted / (live + deleted)`
+2. **compact** — 拷存活 needle 到 `.cpd` + 紧凑 `.cpx`（期间禁写）
+3. **commit** — 写 `.cpc` 后 `rename` 替换 `.dat`/`.idx` 并 reload
+4. **cleanup** — 清理残留临时文件
+
+一键 `compact()` = compact → commit → cleanup。Clerk leader 可按阈值自动调度。
 
 ```text
 旧 .dat:  [A][B✗][C][B'活]     →  新 .dat: [A][C][B']
 旧 .idx:  多条日志 / 空洞       →  新 .idx: 三条紧凑记录
 ```
-
-遍历存活 needle → 重写干净 `.dat` → 截断重写紧凑 `.idx`。
 
 ## 与 FileId 的关系
 
