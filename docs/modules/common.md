@@ -1,3 +1,5 @@
+> 语言: [中文](./common.md) · [English](../en/modules/common.md)
+
 # Common（`opens3-common`）
 
 ## 作用

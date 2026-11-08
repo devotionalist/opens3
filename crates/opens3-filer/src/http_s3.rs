@@ -1246,7 +1246,7 @@ async fn admin_status(State(st): State<AppState>) -> impl IntoResponse {
     axum::Json(serde_json::json!({
         "service": "opens3-s3",
         "port": st.server.port,
-        "clerk": st.server.blob.clerk,
+        "clerk": st.server.blob.clerk_url(),
         "auth_enabled": st.server.auth.read().enabled,
     }))
 }

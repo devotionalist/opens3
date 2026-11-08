@@ -586,7 +586,7 @@
 <body>
   <header class="app">
     <div class="brand">
-      <h1>OpenS3</h1>
+    <h1>OpenS3</h1>
       <span>对象存储控制台</span>
     </div>
     <div class="tabs">
@@ -766,7 +766,7 @@
       if (!r.ok) {
         let detail = r.statusText;
         try {
-          const j = await r.json();
+        const j = await r.json();
           detail = j.error || j.message || JSON.stringify(j);
         } catch (_) {
           try { detail = await r.text(); } catch (_) {}

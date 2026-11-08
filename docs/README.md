@@ -1,3 +1,5 @@
+> 语言: [中文](./README.md) · [English](en/README.md)
+
 # OpenS3 文档
 
 OpenS3 是用 Rust 实现的分布式对象存储：Clerk（Raft）分配卷、Volume 顺序追加与副本、统一 Filer 网关（S3 + HTTP/WebDAV）与共享元数据。

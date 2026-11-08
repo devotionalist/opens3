@@ -32,6 +32,14 @@ volume:
   # Capacity ceiling AND auto-precreate target on heartbeat (1 = one data volume per data node).
   maxVolumes: 1
   maxVolumeSizeMb: 30720
+  # Helm-declared ordinals (0..replicas-1) register online by default.
+  # Web/STS scale beyond that has no bootstrap file → stays offline for Admin.
+  startOnline: true
+  # Optional: map ordinal → replica source (ordinal, "volume-N", or full pod name).
+  # Example: replicaOf: { "1": "0", "3": "volume-0" }
+  replicaOf: {}
+  # Optional per-ordinal overrides: [{ ordinal: 2, online: false, replicaOf: "0" }]
+  nodes: []
   persistence:
     enabled: true
     size: 100Gi

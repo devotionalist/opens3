@@ -1,0 +1,49 @@
+{{- /*
+  Per-ordinal bootstrap for volume pods declared by this chart release.
+  Ordinals 0..replicas-1 get an entry (default online). Web/STS scale beyond
+  that has no file → volume starts offline for Admin pairing / online.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "opens3.fullname" . }}-volume-bootstrap
+  labels:
+    {{- include "opens3.labels" . | nindent 4 }}
+    app.kubernetes.io/component: volume
+data:
+{{- $replicas := int .Values.volume.replicas }}
+{{- $fullname := include "opens3.fullname" . }}
+{{- $startOnline := true }}
+{{- if hasKey .Values.volume "startOnline" }}
+  {{- $startOnline = .Values.volume.startOnline }}
+{{- end }}
+{{- range $i := until $replicas }}
+  {{- $ord := toString $i }}
+  {{- $online := $startOnline }}
+  {{- $replicaOf := "" }}
+  {{- if and $.Values.volume.nodes (kindIs "slice" $.Values.volume.nodes) }}
+    {{- range $.Values.volume.nodes }}
+      {{- if eq (toString .ordinal) $ord }}
+        {{- if hasKey . "online" }}{{ $online = .online }}{{ end }}
+        {{- if .replicaOf }}{{ $replicaOf = .replicaOf }}{{ end }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
+  {{- if and $.Values.volume.replicaOf (kindIs "map" $.Values.volume.replicaOf) }}
+    {{- range $k, $v := $.Values.volume.replicaOf }}
+      {{- if eq ($k | toString) $ord }}
+        {{- $replicaOf = $v | toString }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
+  {{- /* Resolve bare ordinal / short name to StatefulSet pod id */ -}}
+  {{- if $replicaOf }}
+    {{- if regexMatch "^[0-9]+$" $replicaOf }}
+      {{- $replicaOf = printf "%s-volume-%s" $fullname $replicaOf }}
+    {{- else if hasPrefix "volume-" $replicaOf }}
+      {{- $replicaOf = printf "%s-%s" $fullname $replicaOf }}
+    {{- end }}
+  {{- end }}
+  {{ $ord | quote }}: |
+    {"online": {{ $online }}, "replicaOf": {{ if $replicaOf }}{{ $replicaOf | quote }}{{ else }}null{{ end }}}
+{{- end }}

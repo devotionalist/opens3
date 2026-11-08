@@ -73,6 +73,34 @@ impl Server {
         kms_passphrase: Option<String>,
         protocols: Protocols,
     ) -> Self {
+        Self::new_with_clerk_peers(
+            store,
+            clerk,
+            Vec::<String>::new(),
+            replication,
+            port,
+            encrypt_passphrase,
+            jwt_secret,
+            tls,
+            access_key,
+            kms_passphrase,
+            protocols,
+        )
+    }
+
+    pub fn new_with_clerk_peers(
+        store: Arc<dyn FilerStore>,
+        clerk: String,
+        clerk_peers: Vec<String>,
+        replication: String,
+        port: u16,
+        encrypt_passphrase: Option<String>,
+        jwt_secret: Option<String>,
+        tls: Option<opens3_common::tls::TlsConfig>,
+        access_key: Option<(String, String)>,
+        kms_passphrase: Option<String>,
+        protocols: Protocols,
+    ) -> Self {
         let mut auth = AuthStore::new(access_key.is_some());
         if let Some((ak, sk)) = access_key {
             auth.upsert(AccessKey {
@@ -95,7 +123,8 @@ impl Server {
         });
         Self {
             store,
-            blob: BlobClient::new(clerk, replication).with_jwt_secret(jwt_secret),
+            blob: BlobClient::new_with_peers(clerk, replication, clerk_peers)
+                .with_jwt_secret(jwt_secret),
             events: EventBus::new(),
             port,
             encrypt_key: encrypt_passphrase.map(|p| key_from_passphrase(&p)),

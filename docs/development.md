@@ -1,3 +1,5 @@
+> 语言: [中文](./development.md) · [English](en/development.md)
+
 # 开发与测试
 
 ## 仓库结构

@@ -128,6 +128,8 @@ spec:
               value: {{ .Values.clerk.port | quote }}
             - name: OPENS3_CLERK_REPLICAS
               value: {{ .Values.clerk.replicas | quote }}
+            - name: OPENS3_CLERK_PEERS
+              value: {{ include "opens3.clerkPeers" . | quote }}
             - name: OPENS3_VOLUME_HEADLESS
               value: {{ include "opens3.volumeHeadless" . | quote }}
             - name: OPENS3_VOLUME_PORT

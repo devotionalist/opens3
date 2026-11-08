@@ -1795,6 +1795,7 @@ dependencies = [
  "axum 0.8.9",
  "bytes",
  "chrono",
+ "crc32fast",
  "dashmap",
  "futures",
  "openraft",

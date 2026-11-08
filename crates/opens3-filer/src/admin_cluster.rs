@@ -488,7 +488,7 @@ fn leader_clerk_id(cluster: &Option<serde_json::Value>, clerks: &[(String, Strin
 
 pub(crate) async fn admin_topology(State(st): State<AppState>) -> impl IntoResponse {
     let client = reqwest::Client::new();
-    let clerk_svc = st.server.blob.clerk.trim_end_matches('/').to_string();
+    let clerk_svc = st.server.blob.clerk_url().trim_end_matches('/').to_string();
     let s3_port = st.server.port;
     let self_pod = std::env::var("POD_NAME").unwrap_or_default();
     let k8s = in_kubernetes();
@@ -1806,15 +1806,7 @@ pub(crate) async fn admin_ops_grow_volumes(
 }
 
 async fn proxy_clerk_get(st: &AppState, path: &str) -> Response {
-    let master = st.server.blob.clerk.trim_end_matches('/');
-    let url = format!("{master}{path}");
-    let client = reqwest::Client::new();
-    match client
-        .get(&url)
-        .timeout(Duration::from_secs(10))
-        .send()
-        .await
-    {
+    match st.server.blob.clerk_get(path).await {
         Ok(r) => {
             let status =
                 StatusCode::from_u16(r.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -1835,45 +1827,11 @@ async fn proxy_clerk_get(st: &AppState, path: &str) -> Response {
 }
 
 async fn proxy_clerk_post(st: &AppState, path: &str) -> Response {
-    let master = st.server.blob.clerk.trim_end_matches('/');
-    let url = format!("{master}{path}");
-    let client = reqwest::Client::new();
-    match client
-        .post(&url)
-        .timeout(Duration::from_secs(15))
-        .send()
-        .await
-    {
-        Ok(r) => {
-            let status =
-                StatusCode::from_u16(r.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-            let body = r.text().await.unwrap_or_default();
-            (
-                status,
-                [(axum::http::header::CONTENT_TYPE, "application/json")],
-                body,
-            )
-                .into_response()
-        }
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-    }
+    proxy_clerk_post_json(st, path, serde_json::json!({})).await
 }
 
 async fn proxy_clerk_post_json(st: &AppState, path: &str, body: serde_json::Value) -> Response {
-    let master = st.server.blob.clerk.trim_end_matches('/');
-    let url = format!("{master}{path}");
-    let client = reqwest::Client::new();
-    match client
-        .post(&url)
-        .timeout(Duration::from_secs(60))
-        .json(&body)
-        .send()
-        .await
-    {
+    match st.server.blob.clerk_post_json(path, &body).await {
         Ok(r) => {
             let status =
                 StatusCode::from_u16(r.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -2390,32 +2348,24 @@ pub(crate) async fn admin_ops_delete_data_node(
         }
     }
     // Must be offline on clerk before scale-in.
-    {
-        let master = st.server.blob.clerk.trim_end_matches('/');
-        let http = reqwest::Client::new();
-        if let Ok(resp) = http
-            .get(format!("{master}/cluster/status"))
-            .timeout(Duration::from_secs(10))
-            .send()
-            .await
-        {
-            if let Ok(v) = resp.json::<serde_json::Value>().await {
-                if let Some(servers) = v.get("servers").and_then(|x| x.as_array()) {
-                    let online = servers.iter().find(|s| {
-                        s.get("node_id").and_then(|x| x.as_str()) == Some(last_pod.as_str())
-                    }).and_then(|s| s.get("online").and_then(|x| x.as_bool()))
+    if let Ok(resp) = st.server.blob.clerk_get("/cluster/status").await {
+        if let Ok(v) = resp.json::<serde_json::Value>().await {
+            if let Some(servers) = v.get("servers").and_then(|x| x.as_array()) {
+                let online = servers
+                    .iter()
+                    .find(|s| s.get("node_id").and_then(|x| x.as_str()) == Some(last_pod.as_str()))
+                    .and_then(|s| s.get("online").and_then(|x| x.as_bool()))
                     .unwrap_or(false);
-                    if online {
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            Json(serde_json::json!({
-                                "ok": false,
-                                "error": format!("{last_pod} 仍在线，请先下线后再删除"),
-                                "node_id": last_pod,
-                            })),
-                        )
-                            .into_response();
-                    }
+                if online {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({
+                            "ok": false,
+                            "error": format!("{last_pod} 仍在线，请先下线后再删除"),
+                            "node_id": last_pod,
+                        })),
+                    )
+                        .into_response();
                 }
             }
         }
@@ -2424,13 +2374,13 @@ pub(crate) async fn admin_ops_delete_data_node(
     match k8s_scale_sts(&client, &base, &token, &ns, &sts, cur - 1).await {
         Ok(()) => {
             // Drop from clerk catalog so Admin topology does not keep a ghost.
-            let master = st.server.blob.clerk.trim_end_matches('/');
-            let http = reqwest::Client::new();
-            let _ = http
-                .post(format!("{master}/cluster/server/remove"))
-                .timeout(Duration::from_secs(15))
-                .json(&serde_json::json!({ "node_id": last_pod }))
-                .send()
+            let _ = st
+                .server
+                .blob
+                .clerk_post_json(
+                    "/cluster/server/remove",
+                    &serde_json::json!({ "node_id": last_pod }),
+                )
                 .await;
             Json(serde_json::json!({
                 "ok": true,

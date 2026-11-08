@@ -163,20 +163,66 @@ impl ClusterState { // 集群状态的操作
         mut info: VolumeServerInfo,
         reported: Vec<VolumeReport>,
     ) -> HeartbeatOutcome {
+        self.heartbeat_with_bootstrap(info, reported, false, None)
+    }
+
+    /// Heartbeat with deploy bootstrap intents (`desired_online` / `desired_replica_of`).
+    ///
+    /// - First registration: apply bootstrap (replica waits offline until source exists).
+    /// - Later: preserve ops online/replica_of; while still offline with no pairing,
+    ///   keep trying `desired_replica_of`, then promote online if desired.
+    pub fn heartbeat_with_bootstrap(
+        &self,
+        mut info: VolumeServerInfo,
+        reported: Vec<VolumeReport>,
+        desired_online: bool,
+        desired_replica_of: Option<String>,
+    ) -> HeartbeatOutcome {
         let mut g = self.inner.write();
         let node_id = info.node_id.clone();
-        // Preserve ops flags across heartbeats (new nodes stay offline; keep replica_of).
-        let prev = g.servers.get(&node_id);
-        let prev_boot = prev.map(|s| s.boot_id.as_str()).unwrap_or("");
+        let prev = g.servers.get(&node_id).cloned();
+        let prev_boot = prev.as_ref().map(|s| s.boot_id.as_str()).unwrap_or("");
         let restart = prev_boot.is_empty() || prev_boot != info.boot_id;
-        info.online = prev.map(|s| s.online).unwrap_or(false);
-        info.replica_of = prev.and_then(|s| s.replica_of.clone());
+        let is_new = prev.is_none();
+
+        if let Some(ref p) = prev {
+            info.online = p.online;
+            info.replica_of = p.replica_of.clone();
+        } else {
+            info.online = false;
+            info.replica_of = None;
+        }
         if restart {
             // Restart / first registration: block writes until fingerprint align.
             info.write_ready = false;
         } else {
             info.write_ready = prev.map(|s| s.write_ready).unwrap_or(false);
         }
+
+        // Resolve bootstrap replica / online before insert so volumes follow node state.
+        let desired_replica = desired_replica_of
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        if is_new {
+            apply_bootstrap_locked(
+                &mut g,
+                &node_id,
+                &mut info,
+                desired_online,
+                desired_replica.as_deref(),
+            );
+        } else if !info.online && info.replica_of.is_none() {
+            // Waiting for source (or Web-offline node with Helm bootstrap still set).
+            apply_bootstrap_locked(
+                &mut g,
+                &node_id,
+                &mut info,
+                desired_online,
+                desired_replica.as_deref(),
+            );
+        }
+
         g.servers.insert(node_id.clone(), info);
 
         let srv_loc = g.servers.get(&node_id).map(|s| s.location.clone());
@@ -944,6 +990,56 @@ impl ClusterState { // 集群状态的操作
     }
 }
 
+/// Apply Helm/CLI bootstrap intents while holding the cluster write lock.
+fn apply_bootstrap_locked(
+    g: &mut Inner,
+    node_id: &str,
+    info: &mut VolumeServerInfo,
+    desired_online: bool,
+    desired_replica: Option<&str>,
+) {
+    if let Some(src) = desired_replica {
+        if src == node_id {
+            return;
+        }
+        if !g.servers.contains_key(src) {
+            // Source not registered yet — stay offline until it appears.
+            return;
+        }
+        // Reject cycles (walk source chain).
+        let mut walk = src.to_string();
+        for _ in 0..=g.servers.len() {
+            if walk == node_id {
+                return;
+            }
+            match g.servers.get(&walk).and_then(|s| s.replica_of.clone()) {
+                Some(next) => walk = next,
+                None => break,
+            }
+        }
+        info.replica_of = Some(src.to_string());
+    }
+    if desired_online && (desired_replica.is_none() || info.replica_of.is_some()) {
+        info.online = true;
+        promote_node_volumes_locked(g, node_id, true);
+    }
+}
+
+fn promote_node_volumes_locked(g: &mut Inner, node_id: &str, online: bool) {
+    for v in g.volumes.values_mut() {
+        if !v.locations.iter().any(|l| l.node_id == node_id) {
+            continue;
+        }
+        if online {
+            if matches!(v.state, VolumeState::Offline) {
+                v.state = VolumeState::Writable;
+            }
+        } else if matches!(v.state, VolumeState::Writable) {
+            v.state = VolumeState::Offline;
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClusterSnapshot { // 集群快照
     pub servers: Vec<VolumeServerInfo>, // 服务器信息
@@ -1332,5 +1428,59 @@ mod tests {
         cs.set_server_online("v0", true).unwrap();
         assert_eq!(cs.list_volumes("")[0].state, VolumeState::Writable);
         assert!(cs.assign("", None, 1, 0).is_ok());
+    }
+
+    #[test]
+    fn bootstrap_start_online_joins_assign() {
+        let cs = ClusterState::new(Replication::DEFAULT);
+        let info = VolumeServerInfo {
+            node_id: "v0".into(),
+            location: loc("v0"),
+            max_volume_count: 1,
+            free_disk_bytes: 1 << 30,
+            last_seen: now_secs(),
+            online: false,
+            replica_of: None,
+            boot_id: "boot-v0".into(),
+            write_ready: false,
+        };
+        cs.heartbeat_with_bootstrap(info, vec![], true, None);
+        assert!(cs.servers()[0].online);
+        assert_eq!(cs.list_volumes("")[0].state, VolumeState::Writable);
+        assert!(cs.assign("", None, 1, 0).is_ok());
+    }
+
+    #[test]
+    fn bootstrap_replica_waits_for_source_then_onlines() {
+        let cs = ClusterState::new(Replication::DEFAULT);
+        let mk = |id: &str| VolumeServerInfo {
+            node_id: id.into(),
+            location: loc(id),
+            max_volume_count: 1,
+            free_disk_bytes: 1 << 30,
+            last_seen: now_secs(),
+            online: false,
+            replica_of: None,
+            boot_id: format!("boot-{id}"),
+            write_ready: false,
+        };
+        // Replica registers first — stays offline until source appears.
+        cs.heartbeat_with_bootstrap(mk("v1"), vec![], true, Some("v0".into()));
+        assert!(!cs.servers().iter().find(|s| s.node_id == "v1").unwrap().online);
+        assert!(cs
+            .servers()
+            .iter()
+            .find(|s| s.node_id == "v1")
+            .unwrap()
+            .replica_of
+            .is_none());
+        // Source comes online.
+        cs.heartbeat_with_bootstrap(mk("v0"), vec![], true, None);
+        assert!(cs.servers().iter().find(|s| s.node_id == "v0").unwrap().online);
+        // Replica heartbeat retries bootstrap.
+        cs.heartbeat_with_bootstrap(mk("v1"), vec![], true, Some("v0".into()));
+        let v1 = cs.servers().into_iter().find(|s| s.node_id == "v1").unwrap();
+        assert_eq!(v1.replica_of.as_deref(), Some("v0"));
+        assert!(v1.online);
     }
 }

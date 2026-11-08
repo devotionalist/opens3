@@ -4,6 +4,7 @@
 
 mod network;
 mod store;
+mod wal;
 
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
@@ -68,7 +69,19 @@ impl RaftLite {
         cluster: ClusterState,
     ) -> anyhow::Result<Self> {
         std::fs::create_dir_all(raft_dir)?;
-        let node_id = name_to_node_id(&node_name);
+        // NodeId must match membership (URL-derived). Using `--ip`/node_name here
+        // while peers hash advertise-url creates ghost voters / failover panics.
+        let node_id = node_id_from_url(&listen_url);
+        let name_id = name_to_node_id(&node_name);
+        if name_id != node_id {
+            tracing::warn!(
+                %node_name,
+                %listen_url,
+                name_id,
+                raft_node_id = node_id,
+                "clerk --ip/node name id differs from advertise-url id; using advertise-url for Raft"
+            );
+        }
 
         // Default LogsSinceLast(5000) never fires for our write rate; keep a short
         // window so restart does not replay thousands of full cluster snapshots.
@@ -95,7 +108,7 @@ impl RaftLite {
         )
         .await?;
 
-        let members = build_members(&node_name, node_id, &listen_url, &peers);
+        let members = build_members(&listen_url, &peers)?;
         maybe_bootstrap(&raft, node_id, &peers, members).await?;
 
         Ok(Self {
@@ -191,30 +204,68 @@ impl RaftLite {
     pub fn bump_heartbeat(&self) {}
 }
 
+/// Build voters solely from advertise URLs (`node_id_from_url`). Rejects
+/// conflicting id↔addr bindings.
 fn build_members(
-    node_name: &str,
-    node_id: NodeId,
     listen_url: &str,
     peers: &[String],
-) -> BTreeMap<NodeId, BasicNode> {
+) -> anyhow::Result<BTreeMap<NodeId, BasicNode>> {
     let mut members = BTreeMap::new();
-    members.insert(
-        node_id,
-        BasicNode {
-            addr: listen_url.to_string(),
-        },
-    );
-    let _ = node_name;
+    insert_member(&mut members, listen_url)?;
     for url in peers {
-        let id = node_id_from_url(url);
-        members.insert(
-            id,
-            BasicNode {
-                addr: url.clone(),
-            },
+        insert_member(&mut members, url)?;
+    }
+    for (id, node) in &members {
+        let derived = node_id_from_url(&node.addr);
+        if derived != *id {
+            anyhow::bail!(
+                "raft membership corrupt: id={id} addr={} derives id={derived}",
+                node.addr
+            );
+        }
+    }
+    Ok(members)
+}
+
+fn insert_member(
+    members: &mut BTreeMap<NodeId, BasicNode>,
+    url: &str,
+) -> anyhow::Result<()> {
+    let url = url.trim().trim_end_matches('/');
+    if url.is_empty() {
+        return Ok(());
+    }
+    let id = node_id_from_url(url);
+    let norm = normalize_raft_addr(url);
+
+    if let Some(prev) = members.get(&id) {
+        if normalize_raft_addr(&prev.addr) != norm {
+            anyhow::bail!(
+                "raft voter id {id} maps to both '{}' and '{url}' — check advertise-url / peers",
+                prev.addr
+            );
+        }
+        return Ok(());
+    }
+    if let Some((other_id, other)) = members
+        .iter()
+        .find(|(_, n)| normalize_raft_addr(&n.addr) == norm)
+    {
+        anyhow::bail!(
+            "raft advertise '{url}' (id={id}) conflicts with existing id={other_id} addr={}",
+            other.addr
         );
     }
-    members
+    members.insert(id, BasicNode { addr: url.to_string() });
+    Ok(())
+}
+
+fn normalize_raft_addr(url: &str) -> String {
+    url.trim()
+        .trim_end_matches('/')
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .to_ascii_lowercase()
 }
 
 /// Prefer StatefulSet ordinal 0 as bootstrap; else smallest numeric id.
@@ -372,5 +423,51 @@ mod tests {
             name_to_node_id("127.0.0.1:9333")
         );
         assert_eq!(name_to_node_id("opens3-clerk-0"), 0);
+    }
+
+    #[test]
+    fn membership_uses_advertise_url_not_pod_name() {
+        // Regression: --ip opens3-clerk-0 + IP advertise must not also insert id=0.
+        let listen = "http://127.0.0.1:58331";
+        let peers = vec![
+            "http://127.0.0.1:58331".into(),
+            "http://127.0.0.1:58332".into(),
+            "http://127.0.0.1:58333".into(),
+        ];
+        let members = build_members(listen, &peers).unwrap();
+        assert_eq!(members.len(), 3, "expected 3 voters, got {members:?}");
+        assert!(members.contains_key(&node_id_from_url(listen)));
+        assert!(!members.contains_key(&name_to_node_id("opens3-clerk-0")));
+    }
+
+    #[test]
+    fn membership_sts_dns_keeps_ordinals() {
+        let listen = "http://opens3-clerk-0.opens3-clerk-hl.svc:9333";
+        let peers = vec![
+            "http://opens3-clerk-0.opens3-clerk-hl.svc:9333".into(),
+            "http://opens3-clerk-1.opens3-clerk-hl.svc:9333".into(),
+            "http://opens3-clerk-2.opens3-clerk-hl.svc:9333".into(),
+        ];
+        let members = build_members(listen, &peers).unwrap();
+        assert_eq!(members.len(), 3);
+        for id in 0..3 {
+            assert!(members.contains_key(&id));
+        }
+        assert!(is_bootstrap_node(0, &members));
+        assert!(!is_bootstrap_node(1, &members));
+    }
+
+    #[test]
+    fn membership_rejects_same_id_different_addrs() {
+        let listen = "http://opens3-clerk-0.a.svc:9333";
+        let peers = vec![
+            "http://opens3-clerk-0.a.svc:9333".into(),
+            "http://opens3-clerk-0.b.svc:9333".into(),
+        ];
+        let err = build_members(listen, &peers).unwrap_err().to_string();
+        assert!(
+            err.contains("maps to both"),
+            "unexpected err: {err}"
+        );
     }
 }

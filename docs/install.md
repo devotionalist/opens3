@@ -1,3 +1,5 @@
+> 语言: [中文](./install.md) · [English](en/install.md)
+
 # 安装与构建
 
 ## 环境要求

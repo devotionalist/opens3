@@ -1,3 +1,5 @@
+> 语言: [中文](./monitoring.md) · [English](en/monitoring.md)
+
 # 监控指南
 
 OpenS3 各组件暴露 **Prometheus 文本格式**指标：`GET /metrics`。

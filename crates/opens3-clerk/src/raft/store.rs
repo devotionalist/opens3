@@ -1,6 +1,9 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
-//! In-memory Raft log + state machine with optional JSON durability on disk.
+//! Raft log + state machine store.
+//!
+//! Log durability is an append-only WAL (`openraft-log.wal`); the state machine
+//! still uses atomic JSON/bin snapshots.
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;
@@ -18,82 +21,90 @@ use openraft::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 
+use super::wal::{approx_entry_bytes, migrate_legacy_json, Wal, WalState};
 use super::{NodeId, RaftRequest, RaftResponse, TypeConfig};
 use crate::cluster::{ClusterSnapshot, ClusterState};
 
 // ── Log store ───────────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct LogStore<C: RaftTypeConfig> {
     inner: Arc<Mutex<LogStoreInner<C>>>,
-    path: Option<PathBuf>,
 }
 
-#[derive(Debug)]
 struct LogStoreInner<C: RaftTypeConfig> {
     last_purged_log_id: Option<LogId<C::NodeId>>,
     log: BTreeMap<u64, C::Entry>,
     committed: Option<LogId<C::NodeId>>,
     vote: Option<Vote<C::NodeId>>,
+    wal: Option<Wal>,
 }
 
-impl<C: RaftTypeConfig> Default for LogStoreInner<C> {
+impl Default for LogStoreInner<TypeConfig> {
     fn default() -> Self {
         Self {
             last_purged_log_id: None,
             log: BTreeMap::new(),
             committed: None,
             vote: None,
+            wal: None,
         }
     }
 }
 
-#[derive(Serialize, Deserialize)]
-struct PersistedLog {
-    vote: Option<Vote<NodeId>>,
-    last_purged_log_id: Option<LogId<NodeId>>,
-    committed: Option<LogId<NodeId>>,
-    entries: Vec<Entry<TypeConfig>>,
+impl LogStoreInner<TypeConfig> {
+    fn from_wal_state(state: WalState, wal: Option<Wal>) -> Self {
+        Self {
+            last_purged_log_id: state.last_purged_log_id,
+            log: state.log,
+            committed: state.committed,
+            vote: state.vote,
+            wal,
+        }
+    }
+
+    fn snapshot_state(&self) -> WalState {
+        WalState {
+            last_purged_log_id: self.last_purged_log_id.clone(),
+            log: self.log.clone(),
+            committed: self.committed.clone(),
+            vote: self.vote.clone(),
+        }
+    }
+
+    fn remove_log_range(&mut self, range: impl RangeBounds<u64>) -> u64 {
+        let keys: Vec<_> = self.log.range(range).map(|(k, _)| *k).collect();
+        let mut removed = 0u64;
+        for key in keys {
+            if let Some(ent) = self.log.remove(&key) {
+                removed += approx_entry_bytes(&ent);
+            }
+        }
+        removed
+    }
+
+    fn maybe_compact(&mut self) -> Result<(), StorageError<NodeId>> {
+        if !self.wal.as_ref().is_some_and(|w| w.needs_compact()) {
+            return Ok(());
+        }
+        let state = self.snapshot_state();
+        if let Some(wal) = self.wal.as_mut() {
+            wal.compact(&state)?;
+        }
+        Ok(())
+    }
 }
 
 impl LogStore<TypeConfig> {
     pub fn open(dir: &Path) -> anyhow::Result<Self> {
-        let path = dir.join("openraft-log.json");
-        let inner = if path.exists() {
-            let bytes = std::fs::read(&path)?;
-            let p: PersistedLog = serde_json::from_slice(&bytes)?;
-            let mut log = BTreeMap::new();
-            for e in p.entries {
-                log.insert(e.get_log_id().index, e);
-            }
-            LogStoreInner {
-                last_purged_log_id: p.last_purged_log_id,
-                log,
-                committed: p.committed,
-                vote: p.vote,
-            }
-        } else {
-            LogStoreInner::default()
-        };
+        let wal_path = dir.join("openraft-log.wal");
+        if !wal_path.exists() {
+            let _ = migrate_legacy_json(dir)?;
+        }
+        let (wal, state) = Wal::create_or_open(&wal_path)?;
         Ok(Self {
-            inner: Arc::new(Mutex::new(inner)),
-            path: Some(path),
+            inner: Arc::new(Mutex::new(LogStoreInner::from_wal_state(state, Some(wal)))),
         })
-    }
-
-    fn persist(inner: &LogStoreInner<TypeConfig>, path: &Path) -> Result<(), StorageError<NodeId>> {
-        let entries: Vec<_> = inner.log.values().cloned().collect();
-        let p = PersistedLog {
-            vote: inner.vote.clone(),
-            last_purged_log_id: inner.last_purged_log_id.clone(),
-            committed: inner.committed.clone(),
-            entries,
-        };
-        let bytes = serde_json::to_vec(&p).map_err(|e| StorageIOError::write_logs(&e))?;
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, bytes).map_err(|e| StorageIOError::write_logs(&e))?;
-        std::fs::rename(&tmp, path).map_err(|e| StorageIOError::write_logs(&e))?;
-        Ok(())
     }
 }
 
@@ -101,7 +112,6 @@ impl Default for LogStore<TypeConfig> {
     fn default() -> Self {
         Self {
             inner: Arc::new(Mutex::new(LogStoreInner::default())),
-            path: None,
         }
     }
 }
@@ -125,16 +135,13 @@ impl RaftLogStorage<TypeConfig> for LogStore<TypeConfig> {
 
     async fn get_log_state(&mut self) -> Result<LogState<TypeConfig>, StorageError<NodeId>> {
         let inner = self.inner.lock().await;
+        let last_purged = inner.last_purged_log_id.clone();
         let last = inner
             .log
             .iter()
             .next_back()
-            .map(|(_, ent)| ent.get_log_id().clone());
-        let last_purged = inner.last_purged_log_id.clone();
-        let last = match last {
-            None => last_purged.clone(),
-            Some(x) => Some(x),
-        };
+            .map(|(_, ent)| ent.get_log_id().clone())
+            .or_else(|| last_purged.clone());
         Ok(LogState {
             last_purged_log_id: last_purged,
             last_log_id: last,
@@ -146,9 +153,10 @@ impl RaftLogStorage<TypeConfig> for LogStore<TypeConfig> {
         committed: Option<LogId<NodeId>>,
     ) -> Result<(), StorageError<NodeId>> {
         let mut inner = self.inner.lock().await;
-        inner.committed = committed;
-        if let Some(path) = &self.path {
-            Self::persist(&inner, path)?;
+        inner.committed = committed.clone();
+        if let Some(wal) = inner.wal.as_mut() {
+            wal.append_committed(committed.as_ref())?;
+            wal.sync()?;
         }
         Ok(())
     }
@@ -160,8 +168,9 @@ impl RaftLogStorage<TypeConfig> for LogStore<TypeConfig> {
     async fn save_vote(&mut self, vote: &Vote<NodeId>) -> Result<(), StorageError<NodeId>> {
         let mut inner = self.inner.lock().await;
         inner.vote = Some(vote.clone());
-        if let Some(path) = &self.path {
-            Self::persist(&inner, path)?;
+        if let Some(wal) = inner.wal.as_mut() {
+            wal.append_vote(vote)?;
+            wal.sync()?;
         }
         Ok(())
     }
@@ -180,10 +189,13 @@ impl RaftLogStorage<TypeConfig> for LogStore<TypeConfig> {
     {
         let mut inner = self.inner.lock().await;
         for entry in entries {
+            if let Some(wal) = inner.wal.as_mut() {
+                wal.append_entry(&entry)?;
+            }
             inner.log.insert(entry.get_log_id().index, entry);
         }
-        if let Some(path) = &self.path {
-            Self::persist(&inner, path)?;
+        if let Some(wal) = inner.wal.as_mut() {
+            wal.sync()?;
         }
         callback.log_io_completed(Ok(()));
         Ok(())
@@ -191,13 +203,13 @@ impl RaftLogStorage<TypeConfig> for LogStore<TypeConfig> {
 
     async fn truncate(&mut self, log_id: LogId<NodeId>) -> Result<(), StorageError<NodeId>> {
         let mut inner = self.inner.lock().await;
-        let keys: Vec<_> = inner.log.range(log_id.index..).map(|(k, _)| *k).collect();
-        for key in keys {
-            inner.log.remove(&key);
+        let removed = inner.remove_log_range(log_id.index..);
+        if let Some(wal) = inner.wal.as_mut() {
+            wal.append_truncate(log_id.index)?;
+            wal.note_removed_waste(removed);
+            wal.sync()?;
         }
-        if let Some(path) = &self.path {
-            Self::persist(&inner, path)?;
-        }
+        inner.maybe_compact()?;
         Ok(())
     }
 
@@ -205,13 +217,13 @@ impl RaftLogStorage<TypeConfig> for LogStore<TypeConfig> {
         let mut inner = self.inner.lock().await;
         assert!(inner.last_purged_log_id.as_ref() <= Some(&log_id));
         inner.last_purged_log_id = Some(log_id.clone());
-        let keys: Vec<_> = inner.log.range(..=log_id.index).map(|(k, _)| *k).collect();
-        for key in keys {
-            inner.log.remove(&key);
+        let removed = inner.remove_log_range(..=log_id.index);
+        if let Some(wal) = inner.wal.as_mut() {
+            wal.append_purge(&log_id)?;
+            wal.note_removed_waste(removed);
+            wal.sync()?;
         }
-        if let Some(path) = &self.path {
-            Self::persist(&inner, path)?;
-        }
+        inner.maybe_compact()?;
         Ok(())
     }
 

@@ -1,3 +1,5 @@
+> 语言: [中文](./s3-compat.md) · [English](en/s3-compat.md)
+
 # S3 兼容矩阵
 
 对照 AWS S3 / `aws-cli` 常用能力。状态：

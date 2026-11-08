@@ -1,3 +1,5 @@
+> 语言: [中文](./quickstart.md) · [English](en/quickstart.md)
+
 # 快速开始
 
 ## 1. 编译

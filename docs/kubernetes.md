@@ -1,3 +1,5 @@
+> 语言: [中文](./kubernetes.md) · [English](en/kubernetes.md)
+
 # Kubernetes 部署
 
 OpenS3 提供两套交付物：
@@ -137,7 +139,8 @@ Admin UI：`kubectl port-forward svc/opens3-filer 8333:8333` 后打开 http://12
 - StatefulSet；`--ip=$(POD_IP)` 上报给 Clerk，集群内直连 Pod IP  
 - `--node-id=$(POD_NAME)` 保证重启后身份稳定  
 - 默认 `defaultReplication=001` 需要 ≥2 个 Volume Pod  
-- 新建节点 / 卷默认同 **offline**，Admin 上线后才参与 assign  
+- Helm 声明的 volume ordinal（`0..replicas-1`）默认 **online**；可用 `volume.replicaOf` / `volume.nodes` 在部署时指定副本关系  
+- Web「添加数据节点」扩出来的新 ordinal **无 bootstrap 文件 → offline**，在 Admin 设副本并上线  
 
 ### 统一 Filer
 

@@ -1,3 +1,5 @@
+> 语言: [中文](./README.md) · [English](../en/modules/README.md)
+
 # 模块文档
 
 按 crate 说明 **作用、边界、内部结构、关键 API / 依赖**。系统级读写路径见 [架构总览](../architecture.md)。

@@ -1,3 +1,5 @@
+> 语言: [中文](./deployment.md) · [English](en/deployment.md)
+
 # 部署
 
 ## 拓扑建议
@@ -52,7 +54,7 @@ opens3 volume \
   --max-volume-size-mb 30720
 ```
 
-再开一块盘：换 `--dir` / `--port` / `--node-id`。新建节点默认 offline，Admin 上线后参与写入。
+再开一块盘：换 `--dir` / `--port` / `--node-id`。默认 offline（或 `--start-online` / Helm bootstrap）；Admin 也可上线。K8s 部署见 [kubernetes.md](kubernetes.md)。
 
 ### 3. 统一 Filer（可多实例）
 

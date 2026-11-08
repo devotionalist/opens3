@@ -1,3 +1,5 @@
+> 语言: [中文](./test-coverage.md) · [English](en/test-coverage.md)
+
 # 测试覆盖报告
 
 记录仓库内自动化测试清单、覆盖能力，以及最近一次全量跑通结果。
@@ -12,7 +14,7 @@
 
 ```bash
 cargo test --workspace
-for t in e2e_fault e2e_kill_replica e2e_master_failover e2e_seal_ec \
+for t in e2e_fault e2e_kill_replica e2e_clerk_failover e2e_clerk_chaos e2e_seal_ec \
          e2e_multi_s3 e2e_raft_snapshot e2e_prod_hardening; do
   bash "tests/${t}.sh" || exit 1
 done
@@ -84,7 +86,8 @@ bash tests/s3_compat/run.sh
 |------|----------|------|
 | `e2e_fault.sh` | all-in-one 写读；第二 Volume + heal/balance；metrics/raft | **通过** |
 | `e2e_kill_replica.sh` | `replication=001` 写时杀备副本 → PUT fail-closed（503） | **通过** |
-| `e2e_master_failover.sh` | 3 Clerk Raft；杀 leader；新主可 assign | **通过** |
+| `e2e_clerk_failover.sh` | 3 Clerk Raft；杀 leader；新主可 assign | **通过** |
+| `e2e_clerk_chaos.sh` | Clerk 扩缩容 / 杀主备 / 日志损坏 / 空盘 / 丢多数派 | **通过** |
 | `e2e_raft_snapshot.sh` | ClusterSnapshot 同步；切主后拓扑仍可用 | **通过** |
 | `e2e_seal_ec.sh` | 写 → seal → EC；读回长度校验 | **通过** |
 | `e2e_multi_s3.sh` | 双 S3 + 共享 Filer HttpStore 交叉读写 | **通过** |

@@ -33,6 +33,10 @@ volume:
   # One data volume per data node by default; raise to precreate a pool.
   maxVolumes: 1
   maxVolumeSizeMb: 1024
+  startOnline: true
+  # Example (commented): make volume-1 a replica of volume-0 at deploy time
+  # replicaOf:
+  #   "1": "0"
   persistence:
     enabled: false
   podAntiAffinity: false

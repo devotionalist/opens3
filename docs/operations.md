@@ -1,3 +1,5 @@
+> 语言: [中文](./operations.md) · [English](en/operations.md)
+
 # 运维手册
 
 ## 集群状态

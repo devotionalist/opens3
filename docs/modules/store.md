@@ -1,3 +1,5 @@
+> 语言: [中文](./store.md) · [English](../en/modules/store.md)
+
 # Store（`opens3-store`）
 
 ## 作用

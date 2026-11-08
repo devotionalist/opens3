@@ -1,3 +1,5 @@
+> 语言: [中文](./gateways.md) · [English](en/gateways.md)
+
 # 客户端与网关
 
 客户端协议多样；**统一 Filer 进程**同时提供 S3、HTTP `/entries`、WebDAV `/dav` 与 Admin UI。路径元数据在共享库（Postgres/MySQL），对象字节在 Volume。

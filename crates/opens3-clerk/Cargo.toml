@@ -25,6 +25,7 @@ rand = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true }
 openraft = { workspace = true }
+crc32fast = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

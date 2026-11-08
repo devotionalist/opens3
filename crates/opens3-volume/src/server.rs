@@ -44,6 +44,10 @@ pub struct VolumeServer {
     pub boot_id: String,
     /// Cleared until Clerk heartbeat returns write_ready after restart align.
     pub write_ready: Arc<AtomicBool>,
+    /// Deploy bootstrap: ask Clerk to mark this node online on first registration.
+    pub start_online: bool,
+    /// Deploy bootstrap: ask Clerk to pair as replica of this node id (pod name).
+    pub replica_of: Option<String>,
 }
 
 #[derive(Clone)]
@@ -93,6 +97,40 @@ impl VolumeServer {
         jwt_secret: Option<String>,
         tls: Option<opens3_common::tls::TlsConfig>,
     ) -> CommonResult<Self> {
+        Self::new_with_bootstrap(
+            node_id,
+            data_dir,
+            clerk,
+            clerk_peers,
+            ip,
+            port,
+            data_center,
+            rack,
+            max_volumes,
+            max_volume_size,
+            jwt_secret,
+            tls,
+            false,
+            None,
+        )
+    }
+
+    pub fn new_with_bootstrap(
+        node_id: String,
+        data_dir: impl AsRef<std::path::Path>,
+        clerk: String,
+        clerk_peers: Vec<String>,
+        ip: String,
+        port: u16,
+        data_center: String,
+        rack: String,
+        max_volumes: u64,
+        max_volume_size: Option<u64>,
+        jwt_secret: Option<String>,
+        tls: Option<opens3_common::tls::TlsConfig>,
+        start_online: bool,
+        replica_of: Option<String>,
+    ) -> CommonResult<Self> {
         let store = VolumeStore::open(data_dir, max_volume_size)?;
         let scheme = opens3_common::tls::scheme(tls.as_ref());
         let public_url = format!("{scheme}://{ip}:{port}");
@@ -120,6 +158,10 @@ impl VolumeServer {
             boot_id: uuid::Uuid::new_v4().to_string(),
             // Optimistic until first heartbeat; Clerk may clear via response.
             write_ready: Arc::new(AtomicBool::new(false)),
+            start_online,
+            replica_of: replica_of
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
         })
     }
 
@@ -251,7 +293,7 @@ impl VolumeServer {
                 }));
             }
         }
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "node_id": self.node_id,
             "ip": self.ip,
             "port": self.port,
@@ -261,8 +303,14 @@ impl VolumeServer {
             "max_volume_count": self.max_volumes,
             "free_disk_bytes": self.store.free_disk_bytes(),
             "boot_id": self.boot_id,
+            "online": self.start_online,
             "volumes": volumes,
         });
+        if let Some(src) = &self.replica_of {
+            body.as_object_mut()
+                .unwrap()
+                .insert("replica_of".into(), serde_json::json!(src));
+        }
         let mut last_err = None;
         let mut resp_opt = None;
         let candidates = {

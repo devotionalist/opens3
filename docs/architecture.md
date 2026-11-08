@@ -1,3 +1,5 @@
+> 语言: [中文](./architecture.md) · [English](en/architecture.md)
+
 # 架构
 
 OpenS3 采用控制面与数据面分离：热路径用卷级同步副本，冷卷可异步纠删码（EC）。代码按 crate 拆分，职责清晰、可独立部署。

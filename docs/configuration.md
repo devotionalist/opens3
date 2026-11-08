@@ -1,3 +1,5 @@
+> 语言: [中文](./configuration.md) · [English](en/configuration.md)
+
 # 配置参考
 
 OpenS3 以 **CLI 参数 + 环境变量** 配置（无独立必选配置文件）。
@@ -66,6 +68,7 @@ OpenS3 以 **CLI 参数 + 环境变量** 配置（无独立必选配置文件）
 |------|------|------|
 | `--port` | `8333` | 监听端口（`s3`=统一网关；`filer`=仅路径 API） |
 | `--clerk` | `http://127.0.0.1:9333` | Clerk |
+| `--clerk-peers` | 空 | 多 Clerk 候选（或 `OPENS3_CLERK_PEERS`）；收到 307 后会 pin 到 `leader` URL，避免反复 redirect |
 | `--default-replication` | `000` | 写入时 assign 副本 |
 | `--meta-dir` | `./filer` | redb 元数据目录（单机；多副本勿用） |
 | `--memory` | false | 等价 `--meta-backend memory` |
@@ -93,5 +96,5 @@ Helm 将 `filer.port` / `filer.credentials` / `filer.metaBackend` 注入统一 F
   …（FilerStore 实现相关）
 
 {raft-dir}/
-  openraft-log.json / vote / snapshot …
+  openraft-log.wal / openraft-sm.json / openraft-snapshot.bin …
 ```

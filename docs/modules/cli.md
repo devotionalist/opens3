@@ -1,3 +1,5 @@
+> 语言: [中文](./cli.md) · [English](../en/modules/cli.md)
+
 # CLI（`opens3`）
 
 ## 作用

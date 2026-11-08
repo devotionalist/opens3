@@ -1,3 +1,5 @@
+> 语言: [中文](./proto.md) · [English](../en/modules/proto.md)
+
 # Proto（`opens3-proto`）
 
 ## 作用

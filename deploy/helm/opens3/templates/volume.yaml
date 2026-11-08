@@ -67,6 +67,7 @@ spec:
             - --rack={{ .Values.rack }}
             - --max-volumes={{ .Values.volume.maxVolumes }}
             - --max-volume-size-mb={{ .Values.volume.maxVolumeSizeMb }}
+            - --bootstrap-dir=/etc/opens3/volume-bootstrap
           env:
             - name: POD_IP
               valueFrom:
@@ -76,6 +77,8 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: OPENS3_VOLUME_BOOTSTRAP_DIR
+              value: /etc/opens3/volume-bootstrap
             - name: RUST_LOG
               value: info
           ports:
@@ -84,6 +87,9 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data/volumes
+            - name: volume-bootstrap
+              mountPath: /etc/opens3/volume-bootstrap
+              readOnly: true
           readinessProbe:
             httpGet:
               path: /health
@@ -98,11 +104,14 @@ spec:
             periodSeconds: 10
           resources:
             {{- toYaml .Values.volume.resources | nindent 12 }}
-      {{- if not .Values.volume.persistence.enabled }}
       volumes:
+        - name: volume-bootstrap
+          configMap:
+            name: {{ include "opens3.fullname" . }}-volume-bootstrap
+        {{- if not .Values.volume.persistence.enabled }}
         - name: data
           emptyDir: {}
-      {{- end }}
+        {{- end }}
   {{- if .Values.volume.persistence.enabled }}
   volumeClaimTemplates:
     - metadata:

@@ -1,3 +1,5 @@
+> 语言: [中文](./multi-filer.md) · [English](en/multi-filer.md)
+
 # 多 Filer 共享元数据
 
 统一 Filer（`opens3 s3`）无状态，可水平扩展。单机 `redb` **不能**被多个进程安全共享。生产多实例请选共享库：

@@ -5,14 +5,23 @@ use opens3_common::types::{ChunkRef, DEFAULT_CHUNK_SIZE};
 use opens3_common::{volume_grpc_endpoint, util, Error, Result};
 use opens3_proto::volume_service_client::VolumeServiceClient;
 use opens3_proto::{DeleteNeedleRequest, ReadNeedleRequest, WriteNeedleRequest};
+use parking_lot::RwLock;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
 use tonic::transport::Channel;
+
 #[derive(Clone)]
 pub struct BlobClient {
-    pub clerk: String,
+    /// Active Clerk base URL. Updated when a non-leader returns 307 + leader_url
+    /// so subsequent calls stick to the Raft leader instead of redirecting forever.
+    clerk: Arc<RwLock<String>>,
+    /// Extra Clerk URLs to try after failover (same idea as Volume `--clerk-peers`).
+    clerk_peers: Vec<String>,
+    /// Clerk HTTP client: redirects disabled so we can pin the leader ourselves.
     pub http: reqwest::Client,
+    /// Separate client for volume HTTP reads (may follow redirects).
+    volume_http: reqwest::Client,
     pub default_replication: String,
     pub chunk_size: u64,
     /// When set, mint Bearer tokens for volume deletes (same secret as clerk/volume).
@@ -52,10 +61,35 @@ struct LookupResp {
 
 impl BlobClient {
     pub fn new(clerk: impl Into<String>, replication: impl Into<String>) -> Self {
-        // 创建客户端
+        Self::new_with_peers(clerk, replication, Vec::<String>::new())
+    }
+
+    pub fn new_with_peers(
+        clerk: impl Into<String>,
+        replication: impl Into<String>,
+        peers: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        let clerk = clerk.into();
+        let mut clerk_peers: Vec<String> = peers
+            .into_iter()
+            .map(|p| p.into())
+            .filter(|p| !p.trim().is_empty())
+            .collect();
+        if !clerk_peers
+            .iter()
+            .any(|p| p.trim_end_matches('/') == clerk.trim_end_matches('/'))
+        {
+            clerk_peers.insert(0, clerk.clone());
+        }
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
-            clerk: clerk.into(),
-            http: reqwest::Client::new(),
+            clerk: Arc::new(RwLock::new(clerk)),
+            clerk_peers,
+            http,
+            volume_http: reqwest::Client::new(),
             default_replication: replication.into(),
             chunk_size: DEFAULT_CHUNK_SIZE,
             jwt_secret: None,
@@ -66,6 +100,135 @@ impl BlobClient {
     pub fn with_jwt_secret(mut self, secret: Option<String>) -> Self {
         self.jwt_secret = secret;
         self
+    }
+
+    /// Current Clerk base URL (may track the Raft leader after redirects).
+    pub fn clerk_url(&self) -> String {
+        self.clerk.read().clone()
+    }
+
+    fn remember_clerk(&self, url: &str) {
+        let u = url.trim_end_matches('/').to_string();
+        if u.is_empty() {
+            return;
+        }
+        let mut g = self.clerk.write();
+        if g.trim_end_matches('/') != u {
+            tracing::info!(old = %*g, new = %u, "filer pinned clerk leader URL");
+            *g = u;
+        }
+    }
+
+    fn clerk_candidates(&self) -> Vec<String> {
+        let cur = self.clerk.read().clone();
+        let mut out = vec![cur];
+        for p in &self.clerk_peers {
+            if !out
+                .iter()
+                .any(|x| x.trim_end_matches('/') == p.trim_end_matches('/'))
+            {
+                out.push(p.clone());
+            }
+        }
+        out
+    }
+
+    fn extract_leader(v: &serde_json::Value) -> Option<String> {
+        v.get("leader")
+            .or_else(|| v.get("leader_url"))
+            .and_then(|x| x.as_str())
+            .map(|s| s.trim_end_matches('/').to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    /// GET a Clerk path, follow one leader redirect, and pin the leader URL.
+    pub async fn clerk_get(&self, path_and_query: &str) -> Result<reqwest::Response> {
+        let pq = path_and_query.trim_start_matches('/');
+        let mut last_err = Error::Internal("no clerk reachable".into());
+        for base in self.clerk_candidates() {
+            let url = format!("{}/{}", base.trim_end_matches('/'), pq);
+            match self.http.get(&url).send().await {
+                Ok(resp) if resp.status().as_u16() == 307 || resp.status().as_u16() == 308 => {
+                    let v: serde_json::Value = resp.json().await.unwrap_or_default();
+                    let Some(lead) = Self::extract_leader(&v) else {
+                        last_err = Error::Internal("clerk redirect without leader".into());
+                        continue;
+                    };
+                    self.remember_clerk(&lead);
+                    let follow = format!("{lead}/{pq}");
+                    match self.http.get(&follow).send().await {
+                        Ok(r) if r.status().is_success() => {
+                            self.remember_clerk(&lead);
+                            return Ok(r);
+                        }
+                        Ok(r) => {
+                            last_err = Error::Internal(format!(
+                                "clerk leader {}: {}",
+                                lead,
+                                r.status()
+                            ));
+                        }
+                        Err(e) => last_err = Error::Internal(e.to_string()),
+                    }
+                }
+                Ok(resp) if resp.status().is_success() => {
+                    self.remember_clerk(&base);
+                    return Ok(resp);
+                }
+                Ok(resp) => {
+                    last_err = Error::Internal(format!("clerk {}: {}", url, resp.status()));
+                }
+                Err(e) => last_err = Error::Internal(e.to_string()),
+            }
+        }
+        Err(last_err)
+    }
+
+    /// POST JSON to Clerk with the same leader-pinning behavior as [`clerk_get`].
+    pub async fn clerk_post_json(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response> {
+        let pq = path.trim_start_matches('/');
+        let mut last_err = Error::Internal("no clerk reachable".into());
+        for base in self.clerk_candidates() {
+            let url = format!("{}/{}", base.trim_end_matches('/'), pq);
+            match self.http.post(&url).json(body).send().await {
+                Ok(resp) if resp.status().as_u16() == 307 || resp.status().as_u16() == 308 => {
+                    let v: serde_json::Value = resp.json().await.unwrap_or_default();
+                    let Some(lead) = Self::extract_leader(&v) else {
+                        last_err = Error::Internal("clerk redirect without leader".into());
+                        continue;
+                    };
+                    self.remember_clerk(&lead);
+                    let follow = format!("{lead}/{pq}");
+                    match self.http.post(&follow).json(body).send().await {
+                        Ok(r) if r.status().is_success() || r.status().is_client_error() => {
+                            self.remember_clerk(&lead);
+                            return Ok(r);
+                        }
+                        Ok(r) => {
+                            last_err = Error::Internal(format!(
+                                "clerk leader {}: {}",
+                                lead,
+                                r.status()
+                            ));
+                        }
+                        Err(e) => last_err = Error::Internal(e.to_string()),
+                    }
+                }
+                Ok(resp) if resp.status().is_success() || resp.status().is_client_error() => {
+                    self.remember_clerk(&base);
+                    return Ok(resp);
+                }
+                Ok(resp) => {
+                    last_err = Error::Internal(format!("clerk {}: {}", url, resp.status()));
+                }
+                Err(e) => last_err = Error::Internal(e.to_string()),
+            }
+        }
+        Err(last_err)
     }
 
     async fn grpc_client(&self, http_url: &str) -> Result<VolumeServiceClient<Channel>> {
@@ -92,24 +255,14 @@ impl BlobClient {
         replication: Option<&str>,
         ttl: u64, // 过期时间
     ) -> Result<AssignResp> {
-        // 获取复制策略
         let repl = replication.unwrap_or(&self.default_replication);
-        // 创建URL
-        let url = format!(
-            "{}/dir/assign?collection={}&replication={}&ttl={}",
-            self.clerk.trim_end_matches('/'),
+        let pq = format!(
+            "dir/assign?collection={}&replication={}&ttl={}",
             urlencoding_encode(collection),
             repl,
             ttl
         );
-
-        // 发送请求
-        let resp = self
-            .http
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| Error::Internal(e.to_string()))?;
+        let resp = self.clerk_get(&pq).await?;
         if !resp.status().is_success() {
             return Err(Error::Internal(format!(
                 "assign failed: {}",
@@ -123,17 +276,7 @@ impl BlobClient {
 
     /// Lookup the URLs for a volume by its ID.
     pub async fn lookup_urls(&self, volume_id: u32) -> Result<Vec<String>> {
-        let url = format!(
-            "{}/dir/lookup/{}",
-            self.clerk.trim_end_matches('/'),
-            volume_id
-        );
-        let resp = self
-            .http
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| Error::Internal(e.to_string()))?;
+        let resp = self.clerk_get(&format!("dir/lookup/{volume_id}")).await?;
         if !resp.status().is_success() {
             return Err(Error::NotFound(format!("volume {volume_id}")));
         }
@@ -278,7 +421,7 @@ impl BlobClient {
 
         let url = format!("{}/{}", base.trim_end_matches('/'), fid);
         let resp = self
-            .http
+            .volume_http
             .get(&url)
             .send()
             .await

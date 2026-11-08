@@ -1,3 +1,5 @@
+> 语言: [中文](./troubleshooting.md) · [English](en/troubleshooting.md)
+
 # 故障排查
 
 ## 症状速查
@@ -8,7 +10,8 @@
 | S3 403 AccessDenied | 开了鉴权未签名；Bucket Policy Deny | 配齐 AK/SK；检查 policy |
 | S3 500 写对象 | Volume 不可达；卷只读/已密封 | `volume-list`；看 Volume 日志；heal |
 | 读到一半 checksum mismatch | 磁盘 bitrot | 换副本读；从健康副本 replicate |
-| Master 307/redirect | 当前节点非 leader | 跟随 JSON 里 `leader` URL |
+| Master 307/redirect | 当前节点非 leader | 跟随 JSON 里 `leader` URL；Filer/S3/Volume 会自动 pin，勿对 VIP 开 HTTP 自动跟随 |
+| Filer/S3 写路径一直 307 / 超时 | 旧版客户端自动 follow Service VIP | 升级并用 `--clerk-peers`；确认 pin 到具体 Clerk Pod URL |
 | Master `CrashLoopBackOff` / `OOMKilled` | Raft 日志膨胀 + 重启全量重放 | 见下方 [Master 反复故障 RCA](#master-反复故障-rca) |
 | Master `Ready 0/1` / 双 Leader | Raft 目录用了 emptyDir 或 PVC 丢失 | 启用 `clerk.persistence`；勿冷启多副本空盘 |
 | Master STS 起不来（多副本） | `OrderedReady` 等不到 quorum | Chart 已用 `podManagementPolicy: Parallel` |
@@ -57,7 +60,7 @@ opens3 shell raft-status --master http://10.0.0.1:9333
 1. Leader **每 3 秒**把**整份** `ClusterSnapshot` `client_write` 进 Raft（每条日志是完整拓扑 JSON）。
 2. Volume 心跳自动建卷（旧默认 `maxVolumes=32`，现已改为 `1`）让拓扑持续变大，日志条数与单条体积同步膨胀。
 3. openraft 默认 `SnapshotPolicy::LogsSinceLast(5000)`：开发集群跑数小时只有约 3k 条时**从未触发压缩**。
-4. 状态机 / Raft snapshot **只在内存**；磁盘仅有 `openraft-log.json`。重启时 `last_applied=None`，引擎对整段日志做 `re-apply`。
+4. 状态机 / Raft snapshot **只在内存**；磁盘仅有日志文件。重启时 `last_applied=None`，引擎对整段日志做 `re-apply`。
 5. 数千次「全量拓扑反序列化 + 导入」峰值内存超过 limit → **OOMKilled (137)** → kubelet `CrashLoopBackOff`。
 
 典型日志特征：
@@ -95,7 +98,7 @@ kubectl -n opens3 get pod opens3-master-0
 kubectl -n opens3 describe pod opens3-master-0 | grep -E 'OOM|Exit Code|Restart'
 kubectl -n opens3 logs opens3-master-0 | grep -E 're-apply|last_applied|build_snapshot|OOM'
 kubectl -n opens3 exec opens3-master-0 -- ls -lah /data/raft/
-# 期望同时存在：openraft-log.json、openraft-sm.json、openraft-snapshot.bin
+# 期望同时存在：openraft-log.wal（或迁移前的 openraft-log.json）、openraft-sm.json、openraft-snapshot.bin
 curl -s http://127.0.0.1:9333/cluster/status   # role=Leader / is_leader=true
 ```
 
@@ -106,7 +109,7 @@ curl -s http://127.0.0.1:9333/cluster/status   # role=Leader / is_leader=true
 1. **Master Raft 目录必须 PVC**；不要在多副本或会重启的环境用 emptyDir。  
 2. **不要**在未压缩的旧 PVC 上长期跑「每秒写全量拓扑」的旧镜像。  
 3. 需要预建更多数据卷时再提高 `volume.maxVolumes`；默认保持每节点 1 卷，避免拓扑/Raft 膨胀。  
-4. 观察 `opens3_master_raft_commit_index` 与 PVC 上 `openraft-log.json` 体积；只涨不缩说明 snapshot/purge 失效。  
+4. 观察 `opens3_master_raft_commit_index` 与 PVC 上 `openraft-log.wal` 体积；只涨不缩且从不 compact 说明 snapshot/purge 失效。  
 5. 单副本 Master 缩容 / 清 PVC 后，旧多副本 volume 数据与拓扑可能不一致，应用心跳 + heal 收敛，而不是再起一套空 Master 指望自动对齐。
 
 ## Volume 掉线后恢复

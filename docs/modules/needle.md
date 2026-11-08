@@ -1,3 +1,5 @@
+> 语言: [中文](./needle.md) · [English](../en/modules/needle.md)
+
 # Needle 数据结构
 
 Volume 在磁盘上以 **Needle** 为单位追加存储对象字节。实现见 `crates/opens3-volume/src/needle.rs`；常量 `NEEDLE_HEADER_SIZE` / `NEEDLE_CHECKSUM_SIZE` 在 `opens3-common`。

@@ -67,6 +67,16 @@ enum Commands {
         max_volume_size_mb: Option<u64>,
         #[arg(long, default_value = "")]
         node_id: String,
+        /// Mark this data node online on first Clerk registration (Helm deploy default).
+        #[arg(long, default_value_t = false, env = "OPENS3_VOLUME_START_ONLINE")]
+        start_online: bool,
+        /// Pair as replica of this node id / pod name on first registration (while offline).
+        #[arg(long, default_value = "", env = "OPENS3_VOLUME_REPLICA_OF")]
+        replica_of: String,
+        /// Directory of per-ordinal bootstrap JSON files (`{ordinal}` → `{"online":true,"replicaOf":"..."}`).
+        /// When the ordinal file is missing (Web/STS scale-add), node stays offline for Admin ops.
+        #[arg(long, default_value = "", env = "OPENS3_VOLUME_BOOTSTRAP_DIR")]
+        bootstrap_dir: String,
         #[arg(long, env = "OPENS3_VOLUME_JWT_SECRET")]
         jwt_secret: Option<String>,
         #[arg(long, env = "OPENS3_TLS_CERT")]
@@ -80,6 +90,9 @@ enum Commands {
         port: u16,
         #[arg(long, default_value = "http://127.0.0.1:9333")]
         clerk: String,
+        /// Comma-separated clerk URLs; used to find a live node / pin Raft leader after failover
+        #[arg(long, default_value = "", env = "OPENS3_CLERK_PEERS")]
+        clerk_peers: String,
         #[arg(long, default_value = "000")]
         default_replication: String,
         #[arg(long, default_value = "./filer")]
@@ -107,6 +120,9 @@ enum Commands {
         port: u16,
         #[arg(long, default_value = "http://127.0.0.1:9333")]
         clerk: String,
+        /// Comma-separated clerk URLs; used to find a live node / pin Raft leader after failover
+        #[arg(long, default_value = "", env = "OPENS3_CLERK_PEERS")]
+        clerk_peers: String,
         #[arg(long, default_value = "000")]
         default_replication: String,
         #[arg(long, default_value = "./filer")]
@@ -282,6 +298,9 @@ async fn main() -> Result<()> {
             max_volumes,
             max_volume_size_mb,
             node_id,
+            start_online,
+            replica_of,
+            bootstrap_dir,
             jwt_secret,
             tls_cert,
             tls_key,
@@ -298,7 +317,8 @@ async fn main() -> Result<()> {
                 .filter(|s| !s.is_empty())
                 .collect();
             let tls = opens3_common::tls::TlsConfig::from_opts(tls_cert, tls_key)?;
-            VolumeServer::new_with_opts(
+            let boot = load_volume_bootstrap(&node_id, &bootstrap_dir, start_online, &replica_of);
+            VolumeServer::new_with_bootstrap(
                 node_id,
                 dir,
                 clerk,
@@ -311,6 +331,8 @@ async fn main() -> Result<()> {
                 max_size,
                 jwt_secret,
                 tls,
+                boot.start_online,
+                boot.replica_of,
             )?
             .serve()
             .await?;
@@ -318,6 +340,7 @@ async fn main() -> Result<()> {
         Commands::Filer {
             port,
             clerk,
+            clerk_peers,
             default_replication,
             meta_dir,
             memory,
@@ -335,9 +358,15 @@ async fn main() -> Result<()> {
             };
             let store = open_meta_store(&backend, &meta_dir, database_url.as_deref(), None).await?;
             let tls = opens3_common::tls::TlsConfig::from_opts(tls_cert, tls_key)?;
-            Server::new_with_opts(
+            let peers: Vec<String> = clerk_peers
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            Server::new_with_clerk_peers(
                 store,
                 clerk,
+                peers,
                 default_replication,
                 port,
                 encrypt,
@@ -353,6 +382,7 @@ async fn main() -> Result<()> {
         Commands::S3 {
             port,
             clerk,
+            clerk_peers,
             default_replication,
             meta_dir,
             memory,
@@ -390,9 +420,15 @@ async fn main() -> Result<()> {
                 (Some(a), Some(s)) => Some((a, s)),
                 _ => None,
             };
-            Server::new_with_opts(
+            let peers: Vec<String> = clerk_peers
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            Server::new_with_clerk_peers(
                 store,
                 clerk,
+                peers,
                 default_replication,
                 port,
                 encrypt,
@@ -448,7 +484,7 @@ async fn main() -> Result<()> {
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
             let max_size = max_volume_size_mb.map(|m| m * 1024 * 1024);
-            let volume = VolumeServer::new_with_opts(
+            let volume = VolumeServer::new_with_bootstrap(
                 format!("127.0.0.1:{volume_port}"),
                 data_dir,
                 clerk_url.clone(),
@@ -461,6 +497,8 @@ async fn main() -> Result<()> {
                 max_size,
                 jwt_secret.clone(),
                 tls.clone(),
+                true,
+                None,
             )?;
             tokio::spawn(async move {
                 if let Err(e) = volume.serve().await {
@@ -602,5 +640,79 @@ async fn open_meta_store(
             std::fs::create_dir_all(meta_dir)?;
             Ok(Arc::new(RedbStore::open(format!("{meta_dir}/meta.redb"))?))
         }
+    }
+}
+
+struct VolumeBootstrap {
+    start_online: bool,
+    replica_of: Option<String>,
+}
+
+/// Merge CLI/env flags with optional per-ordinal bootstrap JSON from Helm ConfigMap.
+///
+/// Precedence: explicit `--start-online` / `--replica-of` win over the file. If
+/// `bootstrap_dir` is set but the ordinal file is missing (Web scale-add), force
+/// offline so Admin can pair/online from the UI.
+fn load_volume_bootstrap(
+    node_id: &str,
+    bootstrap_dir: &str,
+    cli_start_online: bool,
+    cli_replica_of: &str,
+) -> VolumeBootstrap {
+    let cli_replica = {
+        let t = cli_replica_of.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    };
+
+    let dir = bootstrap_dir.trim();
+    if dir.is_empty() {
+        return VolumeBootstrap {
+            start_online: cli_start_online,
+            replica_of: cli_replica,
+        };
+    }
+
+    let ordinal = node_id.rsplit('-').next().unwrap_or("");
+    let path = std::path::Path::new(dir).join(ordinal);
+    if !path.is_file() {
+        tracing::info!(
+            %node_id,
+            ordinal,
+            "volume bootstrap file missing — starting offline for Admin ops"
+        );
+        return VolumeBootstrap {
+            start_online: false,
+            replica_of: cli_replica,
+        };
+    }
+
+    let mut start_online = cli_start_online;
+    let mut replica_of = cli_replica;
+    if let Ok(bytes) = std::fs::read(&path) {
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            if !cli_start_online {
+                if let Some(o) = v.get("online").and_then(|x| x.as_bool()) {
+                    start_online = o;
+                }
+            }
+            if replica_of.is_none() {
+                let src = v
+                    .get("replicaOf")
+                    .or_else(|| v.get("replica_of"))
+                    .and_then(|x| x.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+                replica_of = src;
+            }
+        }
+    }
+    VolumeBootstrap {
+        start_online,
+        replica_of,
     }
 }

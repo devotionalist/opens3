@@ -60,7 +60,7 @@ fn normalize_path(path: &str) -> String {
 
 async fn status(State(st): State<AppState>) -> impl IntoResponse {
     Json(serde_json::json!({
-        "clerk": st.server.blob.clerk,
+        "clerk": st.server.blob.clerk_url(),
         "port": st.server.port,
         "encryption": st.server.encrypt_key.is_some(),
     }))

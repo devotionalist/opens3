@@ -419,6 +419,12 @@ struct HeartbeatBody {
     /// Unique per Volume process start; change triggers fingerprint reconcile.
     #[serde(default)]
     boot_id: String,
+    /// Bootstrap intent (Helm / CLI). Honored on first registration and while
+    /// still offline with no replica_of (source may appear later).
+    #[serde(default)]
+    online: Option<bool>,
+    #[serde(default)]
+    replica_of: Option<String>,
     #[serde(default)]
     volumes: Vec<VolumeReport>,
 }
@@ -466,9 +472,13 @@ async fn heartbeat(
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs(),
-        // heartbeat() preserves an existing flag; first registration stays offline.
-        online: false,
-        replica_of: None,
+        // Placeholder; cluster.heartbeat applies bootstrap online / replica_of.
+        online: body.online.unwrap_or(false),
+        replica_of: body
+            .replica_of
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
         boot_id: if body.boot_id.is_empty() {
             uuid::Uuid::new_v4().to_string()
         } else {
@@ -476,8 +486,15 @@ async fn heartbeat(
         },
         write_ready: false,
     };
+    let desired_online = body.online.unwrap_or(false);
+    let desired_replica = info.replica_of.clone();
     let t0 = Instant::now();
-    let outcome = st.clerk.cluster.heartbeat(info, body.volumes);
+    let outcome = st.clerk.cluster.heartbeat_with_bootstrap(
+        info,
+        body.volumes,
+        desired_online,
+        desired_replica,
+    );
     // Only force a Raft propose when heartbeat asks to create volumes; otherwise
     // the periodic snapshot loop covers follower sync.
     if !outcome.create.is_empty() {
