@@ -95,8 +95,9 @@ Writes require **all replicas to succeed** (strongly consistent write).
 For production/test clusters use Helm or Kustomize; see **[Kubernetes deployment](kubernetes.md)**.
 
 ```bash
-docker build -t opens3:0.1.0 .
+# Prefer the published image (or build locally — see kubernetes.md)
 helm upgrade --install opens3 deploy/helm/opens3 -n opens3 --create-namespace \
+  --set image.repository=jinopen/opens3 \
   --set image.tag=0.1.0 \
   --set filer.credentials.secretKey='please-change-me'
 ```

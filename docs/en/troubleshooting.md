@@ -46,7 +46,7 @@ These are often treated as “Master is unstable again,” but they are **differ
 
 - If Master's `--raft-dir` mounts `emptyDir`, every Pod recreate is a **brand-new node**.
 - Single replica: repeated bootstrap; multi-replica: each node campaigns with empty logs → **dual Leader / split-brain feel / Ready fails for a long time**.
-- **Fix**: Helm `clerk.persistence.enabled=true` (PVC `raft-opens3-master-N`). `values-dev.yaml` already forces this on.
+- **Fix**: Helm `clerk.persistence.enabled=true` (default hostPath under `/var/lib/opens3/...`, or PVC when `persistence.type=pvc`). `values-dev.yaml` already forces this on.
 
 ### Root cause B: OrderedReady × Raft cold start
 

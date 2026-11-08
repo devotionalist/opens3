@@ -57,6 +57,11 @@ spec:
         app.kubernetes.io/name: opens3
         app.kubernetes.io/component: clerk
     spec:
+      # Default: hostPath under /var/lib/opens3 (single-node / local clusters).
+      # For multi-node production, switch to volumeClaimTemplates + StorageClass.
+      securityContext:
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -66,6 +71,21 @@ spec:
                   matchLabels:
                     app.kubernetes.io/component: clerk
                 topologyKey: kubernetes.io/hostname
+      initContainers:
+        - name: prepare-hostpath
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "mkdir -p /mnt/$(POD_NAME) && chown -R 10001:0 /mnt/$(POD_NAME)"]
+          securityContext:
+            runAsUser: 0
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          volumeMounts:
+            - name: raft
+              mountPath: /mnt
       containers:
         - name: clerk
           image: opens3:latest
@@ -101,6 +121,7 @@ spec:
           volumeMounts:
             - name: raft
               mountPath: /data/raft
+              subPathExpr: $(POD_NAME)
           readinessProbe:
             httpGet:
               path: /ready
@@ -120,11 +141,8 @@ spec:
             limits:
               cpu: "1"
               memory: 1Gi
-  volumeClaimTemplates:
-    - metadata:
-        name: raft
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 5Gi
+      volumes:
+        - name: raft
+          hostPath:
+            path: /var/lib/opens3/opens3/opens3/clerk
+            type: DirectoryOrCreate

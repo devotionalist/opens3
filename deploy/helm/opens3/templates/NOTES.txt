@@ -22,4 +22,7 @@ Port-forward:
   export AWS_SECRET_ACCESS_KEY='(from secret)'
   aws --endpoint-url http://127.0.0.1:8333 s3 ls
 
-Docs: docs/architecture.md · docs/gateways.md · docs/kubernetes.md
+Image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+Persistence: {{ .Values.persistence.type | default "hostPath" }}{{ if eq (.Values.persistence.type | default "hostPath") "hostPath" }} (root {{ ((.Values.persistence.hostPath).root) | default "/var/lib/opens3" }}){{ end }}
+Docs: docs/en/architecture.md · docs/en/gateways.md · docs/en/kubernetes.md
+Docker Hub: https://hub.docker.com/r/jinopen/opens3

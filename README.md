@@ -40,6 +40,8 @@ After deploy, open `http://<filer>:8333/admin/ui` for the live view. See [Archit
 
 ## Quick start
 
+From source:
+
 ```bash
 cargo build --release
 ./target/release/opens3 server --dir ./data --max-volume-size-mb 64
@@ -48,6 +50,14 @@ cargo build --release
 # Admin: http://127.0.0.1:8333/admin/ui
 # Clerk: http://127.0.0.1:9333
 ```
+
+Docker Hub image (Clerk / Volume / Filer share one image):
+
+```bash
+docker pull jinopen/opens3:0.1.0
+```
+
+Helm defaults to `jinopen/opens3:0.1.0` — see [Kubernetes](docs/en/kubernetes.md).
 
 ```bash
 curl -X PUT http://127.0.0.1:8333/demo
@@ -91,6 +101,8 @@ bash tests/s3_compat/run.sh
 cargo build --release
 ./target/release/opens3 server --dir ./data --max-volume-size-mb 64
 # S3 http://127.0.0.1:8333 · Admin /admin/ui · Clerk :9333
+
+docker pull jinopen/opens3:0.1.0
 ```
 
-完整中文文档见 [docs/zh/](docs/zh/README.md)。
+完整中文文档见 [docs/zh/](docs/zh/README.md)；镜像与 Helm 见 [安装](docs/zh/install.md) / [Kubernetes](docs/zh/kubernetes.md)。

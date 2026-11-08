@@ -5,10 +5,17 @@
 ## 1. 编译
 
 ```bash
-git clone <repo-url> opens3
+git clone https://github.com/devotionalist/opens3.git
 cd opens3
 cargo build --release
 export PATH="$PWD/target/release:$PATH"
+```
+
+或直接拉取已发布镜像（Clerk / Volume / Filer 共用同一 tag；角色由子命令决定）：
+
+```bash
+docker pull jinopen/opens3:0.1.0
+# 完整安装 / 运行示例见 install.md · Kubernetes 见 kubernetes.md
 ```
 
 ## 2. 一键启动（开发 / 单机）

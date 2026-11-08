@@ -13,7 +13,7 @@ OpenS3 提供两套交付物：
 
 ```text
 StatefulSet opens3-clerk ×3     → Raft Clerk
-StatefulSet opens3-volume ×N    → 每 Pod 一块 PVC（模拟多盘）
+StatefulSet opens3-volume ×N    → 每 Pod 默认 hostPath（也可 PVC）
 Deployment  opens3-filer ×N     → 统一网关：S3 + /entries + /dav + Admin
 Deployment  opens3-postgres ×1  → 可选捆绑元数据库（filer.postgres）
 ```
@@ -23,11 +23,19 @@ Deployment  opens3-postgres ×1  → 可选捆绑元数据库（filer.postgres�
 ## 前置条件
 
 - Kubernetes 1.25+
-- 默认 StorageClass（或在 values / ConfigMap 中指定）
-- 构建并推送镜像，或导入本地集群：
+- 节点本地磁盘用于 hostPath（默认根目录 `/var/lib/opens3`），或在 `persistence.type=pvc` 时准备 StorageClass
+- 容器镜像：从 Docker Hub 拉取，或本地构建导入
+
+**推荐（Docker Hub）：**
 
 ```bash
-# 构建
+# Chart 默认仓库：jinopen/opens3
+docker pull jinopen/opens3:0.1.0
+```
+
+**本地构建 / 离线导入：**
+
+```bash
 docker build -t opens3:0.1.0 .
 
 # kind
@@ -35,31 +43,57 @@ kind load docker-image opens3:0.1.0
 
 # Colima k3s
 docker save opens3:0.1.0 | colima ssh -- sudo k3s ctr images import -
+```
 
-# 或推到私有仓库后改 image.repository / image.tag
+Clerk / Volume / Filer **共用一个镜像**，Helm 用容器 `args` 选择角色。详见 [安装 · Docker 镜像](install.md#docker-镜像)。
+
+### 持久化（默认 hostPath）
+
+Chart / 裸 YAML 默认使用 **hostPath**（不需要 StorageClass）：
+
+| 组件 | 路径 |
+|------|------|
+| Clerk | `/var/lib/opens3/<ns>/<release>/clerk/<pod-name>` |
+| Volume | `/var/lib/opens3/<ns>/<release>/volume/<pod-name>` |
+| Postgres | `/var/lib/opens3/<ns>/<release>/postgres` |
+
+适合 Colima / kind / 单节点。数据留在调度到的节点上，避免跨节点频繁重调度。
+
+多节点生产可改为 PVC + StorageClass：
+
+```bash
+helm upgrade --install opens3 deploy/helm/opens3 -n opens3 --create-namespace \
+  --set persistence.type=pvc \
+  --set clerk.persistence.storageClass=fast-ssd \
+  --set volume.persistence.storageClass=fast-ssd \
+  --set filer.postgres.persistence.storageClass=fast-ssd
 ```
 
 ## 方式一：Helm（推荐）
 
+从 Docker Hub 拉取（默认 repository；hostPath 持久化）：
+
 ```bash
 helm upgrade --install opens3 deploy/helm/opens3 \
   --namespace opens3 --create-namespace \
-  --set image.repository=opens3 \
+  --set image.repository=jinopen/opens3 \
   --set image.tag=0.1.0 \
+  --set image.pullPolicy=IfNotPresent \
   --set filer.credentials.accessKey=admin \
   --set filer.credentials.secretKey='please-change-me' \
   --set defaultReplication=001 \
   --set volume.replicas=4
 ```
 
-本地 / Colima 开发覆盖：
+本地 / Colima 开发覆盖（`opens3:0.1.0` + `pullPolicy: Never`，仍为 hostPath）：
 
 ```bash
+# 先 build + import，再：
 helm upgrade --install opens3 deploy/helm/opens3 -n opens3 --create-namespace \
   -f deploy/helm/opens3/values-dev.yaml
 ```
 
-最小开发（关闭 Clerk PVC 需自行评估 Raft 风险；dev 默认已开 persistence）：
+最小开发（关闭 persistence 需自行评估 Raft 风险）：
 
 ```bash
 helm upgrade --install opens3 deploy/helm/opens3 -n opens3 --create-namespace \
@@ -92,8 +126,10 @@ NodePort 暴露 Filer：
 # 以及各 YAML 里的 image: opens3:latest
 
 kubectl apply -k deploy/kubernetes/
-kubectl -n opens3 get pods,svc,pvc
+kubectl -n opens3 get pods,svc
+# hostPath 数据：/var/lib/opens3/opens3/opens3/{clerk,volume,postgres}
 ```
+
 
 启用 Ingress：编辑 `kustomization.yaml` 取消注释 `ingress.yaml`。
 
@@ -132,7 +168,8 @@ Admin UI：`kubectl port-forward svc/opens3-filer 8333:8333` 后打开 http://12
 - 3 副本 StatefulSet + Headless Service  
 - 每 Pod `--advertise-url=http://<pod>.opens3-clerk-hl.<ns>.svc.cluster.local:9333`  
 - `--peers` 列出全部 Clerk DNS（单副本时 peers 为空，立即单节点 leader）  
-- Raft 日志落在 PVC `raft`（勿用 emptyDir）  
+- Raft 日志默认落 hostPath，或在 `persistence.type=pvc` 时落 PVC `raft`（勿用 emptyDir）  
+
 
 ### Volume
 
@@ -154,7 +191,7 @@ Admin UI：`kubectl port-forward svc/opens3-filer 8333:8333` 后打开 http://12
 ### 扩容
 
 ```bash
-# 加 Volume 节点（新 PVC 自动创建）
+# 加 Volume 节点（自动建 hostPath 目录 / PVC）
 kubectl -n opens3 scale sts/opens3-volume --replicas=6
 # 或 helm
 helm upgrade opens3 deploy/helm/opens3 -n opens3 --set volume.replicas=6 --reuse-values
@@ -171,11 +208,12 @@ Admin 拓扑：点 **Volume** 节点可上下线；点 **Filer** 节点可改 Cl
 
 ## Helm values 摘要
 
-见 [`deploy/helm/opens3/values.yaml`](../deploy/helm/opens3/values.yaml)：
+见 [`deploy/helm/opens3/values.yaml`](../../deploy/helm/opens3/values.yaml)：
 
 - `image.*`、`defaultReplication`、`dataCenter` / `rack`
-- `clerk.replicas` / `persistence.size`
-- `volume.replicas` / `maxVolumes` / `maxVolumeSizeMb`
+- `persistence.type`（`hostPath` \| `pvc`）/ `persistence.hostPath.root`
+- `clerk.replicas` / `clerk.persistence.*`
+- `volume.replicas` / `maxVolumes` / `maxVolumeSizeMb` / `volume.persistence.*`
 - `filer.port` / `filer.replicas` / `filer.credentials` / `filer.metaBackend` / `filer.postgres.*` / `filer.databaseUrl`
 - `filer.service.type` / `filer.service.nodePort` / `ingress`
 
@@ -183,8 +221,9 @@ Admin 拓扑：点 **Volume** 节点可上下线；点 **Filer** 节点可改 Cl
 
 ```bash
 helm uninstall opens3 -n opens3
-# PVC 默认保留；确认无数据需求后再删
-kubectl -n opens3 delete pvc --all
+# hostPath 数据仍在节点 /var/lib/opens3/...，需要时手动删
+# 若用了 persistence.type=pvc，PVC 会保留直到删除：
+# kubectl -n opens3 delete pvc --all
 kubectl delete ns opens3
 ```
 

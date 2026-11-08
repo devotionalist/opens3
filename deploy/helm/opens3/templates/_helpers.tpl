@@ -90,3 +90,29 @@ postgres://{{ $user }}:{{ $pass }}@{{ include "opens3.postgresService" . }}.{{ .
 {{- define "opens3.clerkUrl" -}}
 http://{{ include "opens3.clerkService" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ int .Values.clerk.port }}
 {{- end -}}
+
+{{/*
+Persistence type: hostPath (default) | pvc
+Pass dict: root=. component=.Values.clerk.persistence (optional override type)
+*/}}
+{{- define "opens3.persistType" -}}
+{{- $root := .root -}}
+{{- $comp := .component | default dict -}}
+{{- $override := $comp.type | default "" -}}
+{{- if $override -}}
+{{- $override -}}
+{{- else -}}
+{{- $root.Values.persistence.type | default "hostPath" -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Host path root for a component (clerk|volume|postgres).
+Pass dict: root=. component="clerk"
+*/}}
+{{- define "opens3.hostPath" -}}
+{{- $root := .root -}}
+{{- $comp := .component -}}
+{{- $base := (($root.Values.persistence.hostPath).root) | default "/var/lib/opens3" -}}
+{{- printf "%s/%s/%s/%s" $base $root.Release.Namespace (include "opens3.fullname" $root) $comp -}}
+{{- end -}}

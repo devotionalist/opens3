@@ -1,4 +1,6 @@
 {{- if and .Values.filer.enabled (eq (.Values.filer.metaBackend | default "") "postgres") (.Values.filer.postgres.enabled | default false) }}
+{{- $pgPersist := .Values.filer.postgres.persistence | default dict -}}
+{{- $pgPersistType := include "opens3.persistType" (dict "root" . "component" $pgPersist) -}}
 apiVersion: v1
 kind: Secret
 metadata:
@@ -52,6 +54,21 @@ spec:
         app.kubernetes.io/instance: {{ .Release.Name }}
         app.kubernetes.io/component: postgres
     spec:
+      {{- if and $pgPersist.enabled (eq $pgPersistType "hostPath") }}
+      securityContext:
+        fsGroup: 70
+        fsGroupChangePolicy: OnRootMismatch
+      initContainers:
+        - name: prepare-hostpath
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "mkdir -p /mnt/pgdata && chown -R 70:70 /mnt/pgdata"]
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: data
+              mountPath: /mnt
+      {{- end }}
       containers:
         - name: postgres
           image: {{ .Values.filer.postgres.image | default "postgres:16-alpine" | quote }}
@@ -68,6 +85,9 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+              {{- if and $pgPersist.enabled (eq $pgPersistType "hostPath") }}
+              subPath: pgdata
+              {{- end }}
           readinessProbe:
             exec:
               command: ["pg_isready", "-U", {{ .Values.filer.postgres.user | default "opens3" | quote }}]
@@ -82,13 +102,17 @@ spec:
             {{- toYaml (.Values.filer.postgres.resources | default dict) | nindent 12 }}
       volumes:
         - name: data
-          {{- if .Values.filer.postgres.persistence.enabled }}
+          {{- if not $pgPersist.enabled }}
+          emptyDir: {}
+          {{- else if eq $pgPersistType "hostPath" }}
+          hostPath:
+            path: {{ include "opens3.hostPath" (dict "root" . "component" "postgres") | quote }}
+            type: DirectoryOrCreate
+          {{- else }}
           persistentVolumeClaim:
             claimName: {{ include "opens3.fullname" . }}-postgres
-          {{- else }}
-          emptyDir: {}
           {{- end }}
-{{- if .Values.filer.postgres.persistence.enabled }}
+{{- if and $pgPersist.enabled (eq $pgPersistType "pvc") }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -99,12 +123,12 @@ metadata:
     app.kubernetes.io/component: postgres
 spec:
   accessModes:
-    - {{ .Values.filer.postgres.persistence.accessMode | default "ReadWriteOnce" }}
-  {{- if .Values.filer.postgres.persistence.storageClass }}
-  storageClassName: {{ .Values.filer.postgres.persistence.storageClass | quote }}
+    - {{ $pgPersist.accessMode | default "ReadWriteOnce" }}
+  {{- if $pgPersist.storageClass }}
+  storageClassName: {{ $pgPersist.storageClass | quote }}
   {{- end }}
   resources:
     requests:
-      storage: {{ .Values.filer.postgres.persistence.size | default "10Gi" }}
+      storage: {{ $pgPersist.size | default "10Gi" }}
 {{- end }}
 {{- end }}

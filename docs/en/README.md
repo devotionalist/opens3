@@ -9,7 +9,7 @@ OpenS3 is a distributed object store written in Rust: Clerk (Raft) assigns volum
 | Document | Description |
 |----------|-------------|
 | [Quick start](quickstart.md) | Run all-in-one and aws-cli in five minutes |
-| [Install & build](install.md) | Dependencies, compile, release artifacts |
+| [Install & build](install.md) | Dependencies, compile, Docker Hub image |
 | [Deployment](deployment.md) | Single node, multi-Volume, Clerk HA |
 | [Kubernetes](kubernetes.md) | Helm / Kustomize / scale-out and verification |
 | [Configuration](configuration.md) | CLI flags and environment variables |

@@ -95,8 +95,9 @@ opens3 s3 \
 生产/测试集群请使用 Helm 或 Kustomize，详见 **[Kubernetes 部署](kubernetes.md)**。
 
 ```bash
-docker build -t opens3:0.1.0 .
+# 优先用已发布镜像（本地构建见 kubernetes.md）
 helm upgrade --install opens3 deploy/helm/opens3 -n opens3 --create-namespace \
+  --set image.repository=jinopen/opens3 \
   --set image.tag=0.1.0 \
   --set filer.credentials.secretKey='please-change-me'
 ```

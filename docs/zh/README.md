@@ -9,7 +9,7 @@ OpenS3 是用 Rust 实现的分布式对象存储：Clerk（Raft）分配卷、V
 | 文档 | 说明 |
 |------|------|
 | [快速开始](quickstart.md) | 五分钟跑通 all-in-one 与 aws-cli |
-| [安装构建](install.md) | 依赖、编译、发布产物 |
+| [安装构建](install.md) | 依赖、编译、Docker Hub 镜像 |
 | [部署](deployment.md) | 单机、多 Volume、Clerk HA |
 | [Kubernetes](kubernetes.md) | Helm / Kustomize / 扩容与验证 |
 | [配置参考](configuration.md) | CLI 参数与环境变量 |

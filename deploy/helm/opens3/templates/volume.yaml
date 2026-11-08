@@ -17,6 +17,7 @@ spec:
     app.kubernetes.io/instance: {{ .Release.Name }}
     app.kubernetes.io/component: volume
 ---
+{{- $volumePersistType := include "opens3.persistType" (dict "root" . "component" .Values.volume.persistence) -}}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -51,6 +52,26 @@ spec:
                     app.kubernetes.io/component: volume
                     app.kubernetes.io/instance: {{ .Release.Name }}
                 topologyKey: kubernetes.io/hostname
+      {{- end }}
+      {{- if and .Values.volume.persistence.enabled (eq $volumePersistType "hostPath") }}
+      securityContext:
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+      initContainers:
+        - name: prepare-hostpath
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "mkdir -p /mnt/$(POD_NAME) && chown -R 10001:0 /mnt/$(POD_NAME)"]
+          securityContext:
+            runAsUser: 0
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          volumeMounts:
+            - name: data
+              mountPath: /mnt
       {{- end }}
       containers:
         - name: volume
@@ -87,6 +108,9 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data/volumes
+              {{- if and .Values.volume.persistence.enabled (eq $volumePersistType "hostPath") }}
+              subPathExpr: $(POD_NAME)
+              {{- end }}
             - name: volume-bootstrap
               mountPath: /etc/opens3/volume-bootstrap
               readOnly: true
@@ -108,11 +132,17 @@ spec:
         - name: volume-bootstrap
           configMap:
             name: {{ include "opens3.fullname" . }}-volume-bootstrap
-        {{- if not .Values.volume.persistence.enabled }}
+        {{- if or (not .Values.volume.persistence.enabled) (eq $volumePersistType "hostPath") }}
         - name: data
+          {{- if not .Values.volume.persistence.enabled }}
           emptyDir: {}
+          {{- else }}
+          hostPath:
+            path: {{ include "opens3.hostPath" (dict "root" . "component" "volume") | quote }}
+            type: DirectoryOrCreate
+          {{- end }}
         {{- end }}
-  {{- if .Values.volume.persistence.enabled }}
+  {{- if and .Values.volume.persistence.enabled (eq $volumePersistType "pvc") }}
   volumeClaimTemplates:
     - metadata:
         name: data

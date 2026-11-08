@@ -13,7 +13,7 @@ Topology mapping:
 
 ```text
 StatefulSet opens3-clerk ×3     → Raft Clerk
-StatefulSet opens3-volume ×N    → one PVC per Pod (simulates multi-disk)
+StatefulSet opens3-volume ×N    → one hostPath (default) or PVC per Pod
 Deployment  opens3-filer ×N     → unified gateway: S3 + /entries + /dav + Admin
 Deployment  opens3-postgres ×1  → optional bundled metadata DB (filer.postgres)
 ```
@@ -23,11 +23,19 @@ Client protocols: [gateways.md](gateways.md).
 ## Prerequisites
 
 - Kubernetes 1.25+
-- Default StorageClass (or set one in values / ConfigMap)
-- Build and push the image, or import into a local cluster:
+- Disk on the node for hostPath (default root `/var/lib/opens3`), **or** a StorageClass when using `persistence.type=pvc`
+- Container image: pull from Docker Hub, or build locally
+
+**Recommended (Docker Hub):**
 
 ```bash
-# Build
+# Chart default: jinopen/opens3
+docker pull jinopen/opens3:0.1.0
+```
+
+**Local build / air-gapped import:**
+
+```bash
 docker build -t opens3:0.1.0 .
 
 # kind
@@ -35,31 +43,57 @@ kind load docker-image opens3:0.1.0
 
 # Colima k3s
 docker save opens3:0.1.0 | colima ssh -- sudo k3s ctr images import -
+```
 
-# Or push to a private registry, then set image.repository / image.tag
+Clerk / Volume / Filer share **one** image; Helm selects the role via container `args`. See [Install · Docker image](install.md#docker-image).
+
+### Persistence (default: hostPath)
+
+Chart / raw manifests default to **hostPath** (no StorageClass required):
+
+| Component | Path pattern |
+|-----------|--------------|
+| Clerk | `/var/lib/opens3/<ns>/<release>/clerk/<pod-name>` |
+| Volume | `/var/lib/opens3/<ns>/<release>/volume/<pod-name>` |
+| Postgres | `/var/lib/opens3/<ns>/<release>/postgres` |
+
+Best for Colima / kind / single-node. Data stays on the node that ran the Pod — avoid frequent rescheduling across nodes.
+
+Switch to PVC + StorageClass for multi-node production:
+
+```bash
+helm upgrade --install opens3 deploy/helm/opens3 -n opens3 --create-namespace \
+  --set persistence.type=pvc \
+  --set clerk.persistence.storageClass=fast-ssd \
+  --set volume.persistence.storageClass=fast-ssd \
+  --set filer.postgres.persistence.storageClass=fast-ssd
 ```
 
 ## Option 1: Helm (recommended)
 
+Pull from Docker Hub (default repository; hostPath persistence):
+
 ```bash
 helm upgrade --install opens3 deploy/helm/opens3 \
   --namespace opens3 --create-namespace \
-  --set image.repository=opens3 \
+  --set image.repository=jinopen/opens3 \
   --set image.tag=0.1.0 \
+  --set image.pullPolicy=IfNotPresent \
   --set filer.credentials.accessKey=admin \
   --set filer.credentials.secretKey='please-change-me' \
   --set defaultReplication=001 \
   --set volume.replicas=4
 ```
 
-Local / Colima development overlay:
+Local / Colima development overlay (uses `opens3:0.1.0` + `pullPolicy: Never`, still hostPath):
 
 ```bash
+# build + import first, then:
 helm upgrade --install opens3 deploy/helm/opens3 -n opens3 --create-namespace \
   -f deploy/helm/opens3/values-dev.yaml
 ```
 
-Minimal development (disabling Clerk PVC has Raft risk you must accept; persistence is on by default in the dev chart):
+Minimal development (disabling persistence has Raft risk you must accept):
 
 ```bash
 helm upgrade --install opens3 deploy/helm/opens3 -n opens3 --create-namespace \
@@ -92,8 +126,10 @@ Expose Filer via NodePort:
 # and image: opens3:latest in the YAML files
 
 kubectl apply -k deploy/kubernetes/
-kubectl -n opens3 get pods,svc,pvc
+kubectl -n opens3 get pods,svc
+# hostPath data: /var/lib/opens3/opens3/opens3/{clerk,volume,postgres}
 ```
+
 
 Enable Ingress: edit `kustomization.yaml` and uncomment `ingress.yaml`.
 
@@ -132,7 +168,8 @@ Admin UI: after `kubectl port-forward svc/opens3-filer 8333:8333`, open http://1
 - 3-replica StatefulSet + Headless Service  
 - Each Pod `--advertise-url=http://<pod>.opens3-clerk-hl.<ns>.svc.cluster.local:9333`  
 - `--peers` lists all Clerk DNS names (with a single replica, peers is empty and the node becomes leader immediately)  
-- Raft log on PVC `raft` (do not use emptyDir)  
+- Raft log on hostPath (default) or PVC `raft` when `persistence.type=pvc` — do not use emptyDir  
+
 
 ### Volume
 
@@ -154,7 +191,7 @@ Admin UI: after `kubectl port-forward svc/opens3-filer 8333:8333`, open http://1
 ### Scaling
 
 ```bash
-# Add Volume nodes (new PVCs created automatically)
+# Add Volume nodes (new hostPath dirs / PVCs created automatically)
 kubectl -n opens3 scale sts/opens3-volume --replicas=6
 # or helm
 helm upgrade opens3 deploy/helm/opens3 -n opens3 --set volume.replicas=6 --reuse-values
@@ -174,8 +211,9 @@ Admin topology: click a **Volume** node to bring it online/offline; click a **Fi
 See [`deploy/helm/opens3/values.yaml`](../../deploy/helm/opens3/values.yaml):
 
 - `image.*`, `defaultReplication`, `dataCenter` / `rack`
-- `clerk.replicas` / `persistence.size`
-- `volume.replicas` / `maxVolumes` / `maxVolumeSizeMb`
+- `persistence.type` (`hostPath` \| `pvc`) / `persistence.hostPath.root`
+- `clerk.replicas` / `clerk.persistence.*`
+- `volume.replicas` / `maxVolumes` / `maxVolumeSizeMb` / `volume.persistence.*`
 - `filer.port` / `filer.replicas` / `filer.credentials` / `filer.metaBackend` / `filer.postgres.*` / `filer.databaseUrl`
 - `filer.service.type` / `filer.service.nodePort` / `ingress`
 
@@ -183,8 +221,9 @@ See [`deploy/helm/opens3/values.yaml`](../../deploy/helm/opens3/values.yaml):
 
 ```bash
 helm uninstall opens3 -n opens3
-# PVCs are retained by default; delete only after confirming no data need
-kubectl -n opens3 delete pvc --all
+# hostPath data remains on the node under /var/lib/opens3/... — remove manually if needed
+# If you used persistence.type=pvc, PVCs are retained until deleted:
+# kubectl -n opens3 delete pvc --all
 kubectl delete ns opens3
 ```
 

@@ -43,6 +43,37 @@ cp target/release/opens3 /usr/local/bin/
 opens3 --version
 ```
 
+## Docker 镜像
+
+已发布到 Docker Hub（单一二进制；用子命令切换角色）：
+
+| 镜像 | 说明 |
+|------|------|
+| [`jinopen/opens3:0.1.0`](https://hub.docker.com/r/jinopen/opens3) | 固定版本 |
+| `jinopen/opens3:latest` | 与最近一次推送的 tag 一致 |
+
+```bash
+docker pull jinopen/opens3:0.1.0
+
+# 同一镜像，不同角色
+docker run --rm jinopen/opens3:0.1.0 --help
+docker run --rm -p 9333:9333 jinopen/opens3:0.1.0 clerk --port 9333
+docker run --rm -p 8080:8080 jinopen/opens3:0.1.0 volume --clerk http://host.docker.internal:9333
+docker run --rm -p 8333:8333 jinopen/opens3:0.1.0 s3 --clerk http://host.docker.internal:9333
+```
+
+自行构建并推送：
+
+```bash
+docker build -t opens3:0.1.0 .
+docker tag opens3:0.1.0 jinopen/opens3:0.1.0
+docker login -u jinopen
+docker push jinopen/opens3:0.1.0
+docker push jinopen/opens3:latest
+```
+
+Kubernetes / Helm 用法见 [Kubernetes](kubernetes.md)。
+
 ## 子命令一览
 
 ```text

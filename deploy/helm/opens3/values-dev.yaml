@@ -1,9 +1,11 @@
 # Lightweight overrides for kind / minikube / Colima / local clusters
-# Usage:
+# Usage (local image, no Hub pull):
 #   docker build -t opens3:0.1.0 .
 #   # Colima k3s: docker save opens3:0.1.0 | colima ssh -- sudo k3s ctr images import -
 #   helm upgrade --install opens3 deploy/helm/opens3 -n opens3 --create-namespace \
 #     -f deploy/helm/opens3/values-dev.yaml
+# Inherits persistence.type=hostPath from values.yaml (data under /var/lib/opens3/...).
+# Production / shared clusters: omit this file and use values.yaml + --set persistence.type=pvc.
 image:
   repository: opens3
   tag: "0.1.0"
@@ -13,11 +15,9 @@ defaultReplication: "000"
 
 clerk:
   replicas: 3
-  # Raft MUST survive pod restart; emptyDir caused repeated split-brain / Ready 0/1.
+  # Raft MUST survive pod restart; hostPath (default) or pvc — never long-lived emptyDir.
   persistence:
     enabled: true
-    size: 1Gi
-    storageClass: ""
   podAntiAffinity: false
   # Colima/local: clerk was still OOMKilled (137) at 1Gi during Raft bootstrap.
   resources:
@@ -38,7 +38,7 @@ volume:
   # replicaOf:
   #   "1": "0"
   persistence:
-    enabled: false
+    enabled: true
   podAntiAffinity: false
 
 filer:
@@ -53,7 +53,7 @@ filer:
     enabled: true
     persistence:
       enabled: true
-      size: 1Gi
   service:
     type: NodePort
     nodePort: 30333
+

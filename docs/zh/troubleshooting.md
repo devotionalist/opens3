@@ -46,7 +46,7 @@ opens3 shell raft-status --master http://10.0.0.1:9333
 
 - Master 的 `--raft-dir` 若挂 `emptyDir`，每次 Pod 重建等价于**全新节点**。
 - 单副本时表现为反复 bootstrap；多副本时各节点带着空日志竞选 → **双 Leader / 脑裂感 / Ready 长期失败**。
-- **处理**：Helm `clerk.persistence.enabled=true`（PVC `raft-opens3-master-N`）。`values-dev.yaml` 已强制开启。
+- **处理**：Helm `clerk.persistence.enabled=true`（默认 hostPath：`/var/lib/opens3/...`；`persistence.type=pvc` 时用 PVC）。`values-dev.yaml` 已强制开启。
 
 ### 根因 B：OrderedReady × Raft 冷启
 

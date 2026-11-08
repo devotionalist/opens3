@@ -1,10 +1,20 @@
 image:
-  repository: opens3
-  tag: latest
+  # Docker Hub: https://hub.docker.com/r/jinopen/opens3
+  # Single image for clerk / volume / filer (role via container args).
+  repository: jinopen/opens3
+  tag: "0.1.0"
   pullPolicy: IfNotPresent
 
 nameOverride: ""
 fullnameOverride: ""
+
+# Data plane storage. hostPath is the chart default (local / single-node friendly).
+# For shared multi-node clusters, set type: pvc and a StorageClass.
+persistence:
+  type: hostPath # hostPath | pvc
+  hostPath:
+    # Per-pod dirs: <root>/<namespace>/<release>/{clerk,volume,postgres}/<pod-name>
+    root: /var/lib/opens3
 
 defaultReplication: "001"
 dataCenter: "dc1"
@@ -15,6 +25,8 @@ clerk:
   port: 9333
   persistence:
     enabled: true
+    # type: "" inherits persistence.type; override with hostPath | pvc
+    type: ""
     size: 5Gi
     storageClass: ""
   resources:
@@ -42,6 +54,7 @@ volume:
   nodes: []
   persistence:
     enabled: true
+    type: ""
     size: 100Gi
     storageClass: ""
   resources:
@@ -81,6 +94,7 @@ filer:
     database: opens3
     persistence:
       enabled: true
+      type: ""
       size: 10Gi
       storageClass: ""
       accessMode: ReadWriteOnce

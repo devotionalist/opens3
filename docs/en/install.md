@@ -43,6 +43,37 @@ cp target/release/opens3 /usr/local/bin/
 opens3 --version
 ```
 
+## Docker image
+
+Published image on Docker Hub (single binary; roles selected by CLI subcommand):
+
+| Image | Notes |
+|-------|--------|
+| [`jinopen/opens3:0.1.0`](https://hub.docker.com/r/jinopen/opens3) | Pinned release tag |
+| `jinopen/opens3:latest` | Same build as the latest pushed tag |
+
+```bash
+docker pull jinopen/opens3:0.1.0
+
+# Roles share one image
+docker run --rm jinopen/opens3:0.1.0 --help
+docker run --rm -p 9333:9333 jinopen/opens3:0.1.0 clerk --port 9333
+docker run --rm -p 8080:8080 jinopen/opens3:0.1.0 volume --clerk http://host.docker.internal:9333
+docker run --rm -p 8333:8333 jinopen/opens3:0.1.0 s3 --clerk http://host.docker.internal:9333
+```
+
+Build and publish yourself:
+
+```bash
+docker build -t opens3:0.1.0 .
+docker tag opens3:0.1.0 jinopen/opens3:0.1.0
+docker login -u jinopen
+docker push jinopen/opens3:0.1.0
+docker push jinopen/opens3:latest
+```
+
+Kubernetes / Helm usage: [Kubernetes](kubernetes.md).
+
 ## Subcommands overview
 
 ```text

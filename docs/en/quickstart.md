@@ -5,10 +5,17 @@
 ## 1. Build
 
 ```bash
-git clone <repo-url> opens3
+git clone https://github.com/devotionalist/opens3.git
 cd opens3
 cargo build --release
 export PATH="$PWD/target/release:$PATH"
+```
+
+Or pull the published image (Clerk / Volume / Filer share one tag; role = CLI subcommand):
+
+```bash
+docker pull jinopen/opens3:0.1.0
+# Full install / run examples: install.md · Kubernetes: kubernetes.md
 ```
 
 ## 2. One-command start (dev / single node)
