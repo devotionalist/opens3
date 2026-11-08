@@ -1,4 +1,4 @@
-> Language: [English](./deployment.md) · [中文](../deployment.md)
+> Language: [English](./deployment.md) · [中文](../zh/deployment.md)
 
 # Deployment
 

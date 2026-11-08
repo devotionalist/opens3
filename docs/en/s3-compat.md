@@ -1,4 +1,4 @@
-> Language: [English](./s3-compat.md) · [中文](../s3-compat.md)
+> Language: [English](./s3-compat.md) · [中文](../zh/s3-compat.md)
 
 # S3 compatibility matrix
 

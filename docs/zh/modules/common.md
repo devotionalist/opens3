@@ -1,4 +1,4 @@
-> 语言: [中文](./common.md) · [English](../en/modules/common.md)
+> 语言: [English](../../en/modules/common.md) · [中文](./common.md)
 
 # Common（`opens3-common`）
 

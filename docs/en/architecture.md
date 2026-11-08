@@ -1,4 +1,4 @@
-> Language: [English](./architecture.md) · [中文](../architecture.md)
+> Language: [English](./architecture.md) · [中文](../zh/architecture.md)
 
 # Architecture
 

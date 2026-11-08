@@ -1,4 +1,4 @@
-> Language: [English](./kubernetes.md) · [中文](../kubernetes.md)
+> Language: [English](./kubernetes.md) · [中文](../zh/kubernetes.md)
 
 # Kubernetes deployment
 

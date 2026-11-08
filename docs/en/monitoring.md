@@ -1,4 +1,4 @@
-> Language: [English](./monitoring.md) · [中文](../monitoring.md)
+> Language: [English](./monitoring.md) · [中文](../zh/monitoring.md)
 
 # Monitoring guide
 

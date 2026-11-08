@@ -1,4 +1,4 @@
-> 语言: [中文](./multi-filer.md) · [English](en/multi-filer.md)
+> 语言: [English](../en/multi-filer.md) · [中文](./multi-filer.md)
 
 # 多 Filer 共享元数据
 

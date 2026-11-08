@@ -1,4 +1,4 @@
-> 语言: [中文](./clerk.md) · [English](../en/modules/clerk.md)
+> 语言: [English](../../en/modules/clerk.md) · [中文](./clerk.md)
 
 # Clerk（`opens3-clerk`）
 

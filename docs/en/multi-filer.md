@@ -1,4 +1,4 @@
-> Language: [English](./multi-filer.md) · [中文](../multi-filer.md)
+> Language: [English](./multi-filer.md) · [中文](../zh/multi-filer.md)
 
 # Multi-Filer shared metadata
 

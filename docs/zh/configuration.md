@@ -1,4 +1,4 @@
-> 语言: [中文](./configuration.md) · [English](en/configuration.md)
+> 语言: [English](../en/configuration.md) · [中文](./configuration.md)
 
 # 配置参考
 

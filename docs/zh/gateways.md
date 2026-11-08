@@ -1,4 +1,4 @@
-> 语言: [中文](./gateways.md) · [English](en/gateways.md)
+> 语言: [English](../en/gateways.md) · [中文](./gateways.md)
 
 # 客户端与网关
 

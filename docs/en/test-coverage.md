@@ -1,4 +1,4 @@
-> Language: [English](./test-coverage.md) · [中文](../test-coverage.md)
+> Language: [English](./test-coverage.md) · [中文](../zh/test-coverage.md)
 
 # Test coverage report
 

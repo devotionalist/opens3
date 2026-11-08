@@ -1,4 +1,4 @@
-> Language: [English](./cli.md) · [中文](../../modules/cli.md)
+> Language: [English](./cli.md) · [中文](../../zh/modules/cli.md)
 
 # CLI (`opens3`)
 

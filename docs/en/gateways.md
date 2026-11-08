@@ -1,4 +1,4 @@
-> Language: [English](./gateways.md) · [中文](../gateways.md)
+> Language: [English](./gateways.md) · [中文](../zh/gateways.md)
 
 # Clients and gateways
 

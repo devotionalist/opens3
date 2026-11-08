@@ -1,4 +1,4 @@
-> 语言: [中文](./install.md) · [English](en/install.md)
+> 语言: [English](../en/install.md) · [中文](./install.md)
 
 # 安装与构建
 

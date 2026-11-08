@@ -1,4 +1,4 @@
-> 语言: [中文](./development.md) · [English](en/development.md)
+> 语言: [English](../en/development.md) · [中文](./development.md)
 
 # 开发与测试
 
@@ -7,17 +7,17 @@
 ```text
 opens3/
   crates/
-    opens3/           # CLI 二进制          → docs/modules/cli.md
-    opens3-common/    # FileId、副本、metrics → docs/modules/common.md
-    opens3-proto/     # gRPC protobuf       → docs/modules/proto.md
-    opens3-clerk/  # Raft、cluster、heal（Clerk 控制面）→ docs/modules/clerk.md
-    opens3-volume/    # needle、EC、HTTP    → docs/modules/volume.md
-    opens3-filer/     # 统一网关：S3 + HTTP/WebDAV（http_s3 / http_filer）→ docs/modules/filer.md / s3.md
-    opens3-store/     # FilerStore 后端     → docs/modules/store.md
+    opens3/           # CLI 二进制          → docs/zh/modules/cli.md
+    opens3-common/    # FileId、副本、metrics → docs/zh/modules/common.md
+    opens3-proto/     # gRPC protobuf       → docs/zh/modules/proto.md
+    opens3-clerk/  # Raft、cluster、heal（Clerk 控制面）→ docs/zh/modules/clerk.md
+    opens3-volume/    # needle、EC、HTTP    → docs/zh/modules/volume.md
+    opens3-filer/     # 统一网关：S3 + HTTP/WebDAV（http_s3 / http_filer）→ docs/zh/modules/filer.md / s3.md
+    opens3-store/     # FilerStore 后端     → docs/zh/modules/store.md
   proto/opens3.proto
   admin/static/       # Admin UI
-  docs/               # 用户与架构文档
-  docs/modules/       # 各 crate 设计说明
+  docs/en/ · docs/zh/  # 用户与架构文档（默认 English）
+  docs/zh/modules/    # 各 crate 设计说明
   tests/
     e2e_*.sh / s3_compat/
   LICENSE             # Apache-2.0
@@ -72,9 +72,11 @@ bash tests/s3_compat/run.sh
 - 许可证：**Apache License 2.0**（见根目录 `LICENSE` / `NOTICE`）  
 - 贡献默认按 Apache-2.0 授权  
 - 请勿提交密钥、真实生产 `data/` 目录  
+- 提交规则（仅 PR、所有者批准、tag/Release）：**[贡献与提交规则](contributing.md)**
 
 ## 相关文档
 
+- [贡献与提交规则](contributing.md)
 - [架构](architecture.md)
 - [模块设计](modules/README.md)
 - [配置](configuration.md)

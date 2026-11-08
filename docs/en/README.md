@@ -1,4 +1,4 @@
-> Language: [English](./README.md) · [中文](../README.md)
+> Language: [English](./README.md) · [中文](../zh/README.md)
 
 # OpenS3 Documentation
 
@@ -38,7 +38,8 @@ OpenS3 is a distributed object store written in Rust: Clerk (Raft) assigns volum
 | [Using S3](s3.md) | API, auth, policies, lifecycle, versioning |
 | [S3 compatibility matrix](s3-compat.md) | API coverage and smoke scripts |
 | [Multi-instance metadata](multi-filer.md) | Postgres / MySQL multi-Filer replicas |
-| [Development & testing](development.md) | Repo layout, tests, contributing |
+| [Development & testing](development.md) | Repo layout, tests, local loop |
+| [Contributing](contributing.md) | PR-only workflow, owner approval, tags/releases |
 | [Test coverage report](test-coverage.md) | Unit/E2E checklist and recent green runs |
 
 License: [Apache License 2.0](../../LICENSE)

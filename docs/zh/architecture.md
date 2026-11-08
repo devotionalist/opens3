@@ -1,4 +1,4 @@
-> 语言: [中文](./architecture.md) · [English](en/architecture.md)
+> 语言: [English](../en/architecture.md) · [中文](./architecture.md)
 
 # 架构
 

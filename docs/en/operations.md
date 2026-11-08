@@ -1,4 +1,4 @@
-> Language: [English](./operations.md) · [中文](../operations.md)
+> Language: [English](./operations.md) · [中文](../zh/operations.md)
 
 # Operations handbook
 

@@ -1,4 +1,4 @@
-> Language: [English](./quickstart.md) · [中文](../quickstart.md)
+> Language: [English](./quickstart.md) · [中文](../zh/quickstart.md)
 
 # Quick start
 

@@ -1,4 +1,4 @@
-> 语言: [中文](./needle.md) · [English](../en/modules/needle.md)
+> 语言: [English](../../en/modules/needle.md) · [中文](./needle.md)
 
 # Needle 数据结构
 

@@ -1,4 +1,4 @@
-> Language: [English](./troubleshooting.md) · [中文](../troubleshooting.md)
+> Language: [English](./troubleshooting.md) · [中文](../zh/troubleshooting.md)
 
 # Troubleshooting
 

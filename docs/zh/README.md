@@ -1,4 +1,4 @@
-> 语言: [中文](./README.md) · [English](en/README.md)
+> 语言: [English](../en/README.md) · [中文](./README.md)
 
 # OpenS3 文档
 
@@ -38,7 +38,8 @@ OpenS3 是用 Rust 实现的分布式对象存储：Clerk（Raft）分配卷、V
 | [S3 使用](s3.md) | API、鉴权、策略、生命周期、版本 |
 | [S3 兼容矩阵](s3-compat.md) | API 覆盖与冒烟脚本 |
 | [多实例元数据](multi-filer.md) | Postgres / MySQL 多 Filer 副本 |
-| [开发测试](development.md) | 仓库结构、测试、贡献 |
+| [开发测试](development.md) | 仓库结构、测试、本地循环 |
+| [贡献与提交规则](contributing.md) | 仅 PR、所有者批准、tag/Release 限制 |
 | [测试覆盖报告](test-coverage.md) | 单测/E2E 清单与最近跑通结果 |
 
-协议：[Apache License 2.0](../LICENSE)
+协议：[Apache License 2.0](../../LICENSE)

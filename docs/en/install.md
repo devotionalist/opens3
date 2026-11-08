@@ -1,4 +1,4 @@
-> Language: [English](./install.md) · [中文](../install.md)
+> Language: [English](./install.md) · [中文](../zh/install.md)
 
 # Install & build
 

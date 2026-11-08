@@ -1,4 +1,4 @@
-> 语言: [中文](./filer.md) · [English](../en/modules/filer.md)
+> 语言: [English](../../en/modules/filer.md) · [中文](./filer.md)
 
 # Filer（`opens3-filer`）
 

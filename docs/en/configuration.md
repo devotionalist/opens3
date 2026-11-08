@@ -1,4 +1,4 @@
-> Language: [English](./configuration.md) · [中文](../configuration.md)
+> Language: [English](./configuration.md) · [中文](../zh/configuration.md)
 
 # Configuration reference
 

@@ -1,4 +1,4 @@
-> Language: [English](./README.md) · [中文](../../modules/README.md)
+> Language: [English](./README.md) · [中文](../../zh/modules/README.md)
 
 # Module docs
 

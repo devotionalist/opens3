@@ -1,4 +1,4 @@
-> Language: [English](./development.md) · [中文](../development.md)
+> Language: [English](./development.md) · [中文](../zh/development.md)
 
 # Development and testing
 
@@ -7,17 +7,17 @@
 ```text
 opens3/
   crates/
-    opens3/           # CLI binary            → docs/modules/cli.md
-    opens3-common/    # FileId, replicas, metrics → docs/modules/common.md
-    opens3-proto/     # gRPC protobuf         → docs/modules/proto.md
-    opens3-clerk/     # Raft, cluster, heal (Clerk control plane) → docs/modules/clerk.md
-    opens3-volume/    # needle, EC, HTTP      → docs/modules/volume.md
-    opens3-filer/     # Unified gateway: S3 + HTTP/WebDAV (http_s3 / http_filer) → docs/modules/filer.md / s3.md
-    opens3-store/     # FilerStore backends   → docs/modules/store.md
+    opens3/           # CLI binary            → docs/en/modules/cli.md
+    opens3-common/    # FileId, replicas, metrics → docs/en/modules/common.md
+    opens3-proto/     # gRPC protobuf         → docs/en/modules/proto.md
+    opens3-clerk/     # Raft, cluster, heal (Clerk control plane) → docs/en/modules/clerk.md
+    opens3-volume/    # needle, EC, HTTP      → docs/en/modules/volume.md
+    opens3-filer/     # Unified gateway: S3 + HTTP/WebDAV (http_s3 / http_filer) → docs/en/modules/filer.md / s3.md
+    opens3-store/     # FilerStore backends   → docs/en/modules/store.md
   proto/opens3.proto
   admin/static/       # Admin UI
-  docs/               # User and architecture docs
-  docs/modules/       # Per-crate design notes
+  docs/en/ · docs/zh/  # docs (English default)
+  docs/en/modules/    # Per-crate design notes
   tests/
     e2e_*.sh / s3_compat/
   LICENSE             # Apache-2.0
@@ -72,9 +72,11 @@ When adding fault scenarios, prefer **repeatable automated tests**, and update [
 - License: **Apache License 2.0** (see root `LICENSE` / `NOTICE`)  
 - Contributions are licensed under Apache-2.0 by default  
 - Do not commit secrets or real production `data/` directories  
+- Submission rules (PR-only, owner approval, tags/releases): **[Contributing](contributing.md)**
 
 ## Related docs
 
+- [Contributing](contributing.md)
 - [Architecture](architecture.md)
 - [Module design](modules/README.md)
 - [Configuration](configuration.md)

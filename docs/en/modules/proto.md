@@ -1,4 +1,4 @@
-> Language: [English](./proto.md) · [中文](../../modules/proto.md)
+> Language: [English](./proto.md) · [中文](../../zh/modules/proto.md)
 
 # Proto (`opens3-proto`)
 

@@ -1,4 +1,4 @@
-> 语言: [中文](./README.md) · [English](../en/modules/README.md)
+> 语言: [English](../../en/modules/README.md) · [中文](./README.md)
 
 # 模块文档
 

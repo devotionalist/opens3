@@ -1,4 +1,4 @@
-> 语言: [中文](./store.md) · [English](../en/modules/store.md)
+> 语言: [English](../../en/modules/store.md) · [中文](./store.md)
 
 # Store（`opens3-store`）
 

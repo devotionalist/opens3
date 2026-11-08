@@ -1,4 +1,4 @@
-> 语言: [中文](./test-coverage.md) · [English](en/test-coverage.md)
+> 语言: [English](../en/test-coverage.md) · [中文](./test-coverage.md)
 
 # 测试覆盖报告
 

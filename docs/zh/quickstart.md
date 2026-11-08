@@ -1,4 +1,4 @@
-> 语言: [中文](./quickstart.md) · [English](en/quickstart.md)
+> 语言: [English](../en/quickstart.md) · [中文](./quickstart.md)
 
 # 快速开始
 

@@ -1,4 +1,4 @@
-> 语言: [中文](./deployment.md) · [English](en/deployment.md)
+> 语言: [English](../en/deployment.md) · [中文](./deployment.md)
 
 # 部署
 

@@ -1,4 +1,4 @@
-> 语言: [中文](./kubernetes.md) · [English](en/kubernetes.md)
+> 语言: [English](../en/kubernetes.md) · [中文](./kubernetes.md)
 
 # Kubernetes 部署
 

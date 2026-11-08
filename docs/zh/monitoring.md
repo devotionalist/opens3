@@ -1,4 +1,4 @@
-> 语言: [中文](./monitoring.md) · [English](en/monitoring.md)
+> 语言: [English](../en/monitoring.md) · [中文](./monitoring.md)
 
 # 监控指南
 

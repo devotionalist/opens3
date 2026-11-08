@@ -1,4 +1,4 @@
-> 语言: [中文](./troubleshooting.md) · [English](en/troubleshooting.md)
+> 语言: [English](../en/troubleshooting.md) · [中文](./troubleshooting.md)
 
 # 故障排查
 

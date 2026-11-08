@@ -1,4 +1,4 @@
-> 语言: [中文](./operations.md) · [English](en/operations.md)
+> 语言: [English](../en/operations.md) · [中文](./operations.md)
 
 # 运维手册
 

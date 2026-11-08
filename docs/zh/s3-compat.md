@@ -1,4 +1,4 @@
-> 语言: [中文](./s3-compat.md) · [English](en/s3-compat.md)
+> 语言: [English](../en/s3-compat.md) · [中文](./s3-compat.md)
 
 # S3 兼容矩阵
 
