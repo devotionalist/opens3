@@ -1,5 +1,7 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
+//! OpenS3 统一 CLI：clerk / volume / filer / s3 / 一体机 / shell / fuse 入口。
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use opens3_common::replication::Replication;
@@ -11,70 +13,72 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tracing::info;
 
+/// 顶层命令行：子命令分发到各角色进程。
 #[derive(Parser, Debug)]
 #[command(name = "opens3", version, about = "OpenS3 distributed object storage")]
 struct Cli {
     #[command(subcommand)]
-    cmd: Commands,
+    cmd: Commands, // 实际运行的子命令
 }
 
+/// 可启动的角色与运维辅助命令。
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Start clerk server
+    /// 启动 Clerk（拓扑 / 分配 / Raft）
     Clerk {
         #[arg(long, default_value = "9333")]
-        port: u16,
+        port: u16, // 监听端口
         #[arg(long, default_value = "clerk-1")]
-        ip: String,
+        ip: String, // 节点标识或绑定 IP
         #[arg(long, default_value = "000")]
-        default_replication: String,
-        /// Comma-separated peer clerk URLs for HA
+        default_replication: String, // 默认 XYZ 副本策略
+        /// HA 用的逗号分隔 peer Clerk URL
         #[arg(long, default_value = "")]
         peers: String,
         #[arg(long, default_value = "./data/raft")]
-        raft_dir: String,
-        /// Advertised URL for Raft peers (e.g. http://opens3-clerk-0.opens3-clerk-hl:9333)
+        raft_dir: String, // Raft 持久化目录
+        /// 对 Raft peers 通告的 URL（如 http://opens3-clerk-0.opens3-clerk-hl:9333）
         #[arg(long, default_value = "")]
         advertise_url: String,
         #[arg(long, env = "OPENS3_VOLUME_JWT_SECRET")]
-        jwt_secret: Option<String>,
+        jwt_secret: Option<String>, // Volume JWT 密钥
         #[arg(long, env = "OPENS3_TLS_CERT")]
         tls_cert: Option<String>,
         #[arg(long, env = "OPENS3_TLS_KEY")]
         tls_key: Option<String>,
     },
-    /// Start volume server
+    /// 启动 Volume（数据节点）
     Volume {
         #[arg(long, default_value = "8080")]
         port: u16,
         #[arg(long, default_value = "127.0.0.1")]
         ip: String,
         #[arg(long, default_value = "./data")]
-        dir: String,
+        dir: String, // 本地 .dat/.idx 根目录
         #[arg(long, default_value = "http://127.0.0.1:9333")]
-        clerk: String,
-        /// Comma-separated clerk URLs for leader follow after failover
+        clerk: String, // 主 Clerk URL
+        /// 逗号分隔 Clerk URL，故障切换后跟随新 leader
         #[arg(long, default_value = "", env = "OPENS3_CLERK_PEERS")]
         clerk_peers: String,
         #[arg(long, default_value = "dc1")]
         data_center: String,
         #[arg(long, default_value = "rack1")]
         rack: String,
-        /// Max data volumes this data node may hold; clerk auto-precreates up to this on heartbeat.
+        /// 本节点可持有的最大数据卷数；心跳时 Clerk 可预创建到此上限
         #[arg(long, default_value = "1")]
         max_volumes: u64,
         #[arg(long)]
-        max_volume_size_mb: Option<u64>,
+        max_volume_size_mb: Option<u64>, // 单卷大小上限（MB）
         #[arg(long, default_value = "")]
-        node_id: String,
-        /// Mark this data node online on first Clerk registration (Helm deploy default).
+        node_id: String, // 空则用 ip:port
+        /// 首次向 Clerk 注册时即上线（Helm 部署默认）
         #[arg(long, default_value_t = false, env = "OPENS3_VOLUME_START_ONLINE")]
         start_online: bool,
-        /// Pair as replica of this node id / pod name on first registration (while offline).
+        /// 首次注册时作为该节点 id / pod 名的副本（仍可先离线）
         #[arg(long, default_value = "", env = "OPENS3_VOLUME_REPLICA_OF")]
         replica_of: String,
-        /// Directory of per-ordinal bootstrap JSON files (`{ordinal}` → `{"online":true,"replicaOf":"..."}`).
-        /// When the ordinal file is missing (Web/STS scale-add), node stays offline for Admin ops.
+        /// 按 ordinal 的 bootstrap JSON 目录（`{ordinal}` → `{"online":true,"replicaOf":"..."}`）
+        /// 缺文件时（Web/STS 扩容）保持离线，等 Admin 操作
         #[arg(long, default_value = "", env = "OPENS3_VOLUME_BOOTSTRAP_DIR")]
         bootstrap_dir: String,
         #[arg(long, env = "OPENS3_VOLUME_JWT_SECRET")]
@@ -84,29 +88,29 @@ enum Commands {
         #[arg(long, env = "OPENS3_TLS_KEY")]
         tls_key: Option<String>,
     },
-    /// Start filer (path API / WebDAV; single gateway port)
+    /// 启动 Filer（路径 API / WebDAV；单网关端口）
     Filer {
         #[arg(long, default_value = "8333")]
         port: u16,
         #[arg(long, default_value = "http://127.0.0.1:9333")]
         clerk: String,
-        /// Comma-separated clerk URLs; used to find a live node / pin Raft leader after failover
+        /// 逗号分隔 Clerk URL；找存活节点 / 故障后钉住 Raft leader
         #[arg(long, default_value = "", env = "OPENS3_CLERK_PEERS")]
         clerk_peers: String,
         #[arg(long, default_value = "000")]
         default_replication: String,
         #[arg(long, default_value = "./filer")]
-        meta_dir: String,
+        meta_dir: String, // redb 等本地 meta 目录
         #[arg(long)]
-        memory: bool,
-        /// Meta backend: redb | memory | postgres | mysql | tidb
+        memory: bool, // true 时强制 memory 后端
+        /// Meta 后端：redb | memory | postgres | mysql | tidb
         #[arg(long, default_value = "redb", env = "OPENS3_META_BACKEND")]
         meta_backend: String,
-        /// Postgres / MySQL / TiDB URL (`postgres://` or `mysql://`)
+        /// Postgres / MySQL / TiDB URL（`postgres://` 或 `mysql://`）
         #[arg(long, env = "DATABASE_URL")]
         database_url: Option<String>,
         #[arg(long)]
-        encrypt: Option<String>,
+        encrypt: Option<String>, // 可选落盘加密密钥
         #[arg(long, env = "OPENS3_VOLUME_JWT_SECRET")]
         jwt_secret: Option<String>,
         #[arg(long, env = "OPENS3_TLS_CERT")]
@@ -114,13 +118,13 @@ enum Commands {
         #[arg(long, env = "OPENS3_TLS_KEY")]
         tls_key: Option<String>,
     },
-    /// Start S3 + Filer gateway (single port)
+    /// 启动 S3 + Filer 网关（单端口）
     S3 {
         #[arg(long, default_value = "8333")]
         port: u16,
         #[arg(long, default_value = "http://127.0.0.1:9333")]
         clerk: String,
-        /// Comma-separated clerk URLs; used to find a live node / pin Raft leader after failover
+        /// 逗号分隔 Clerk URL；找存活节点 / 故障后钉住 Raft leader
         #[arg(long, default_value = "", env = "OPENS3_CLERK_PEERS")]
         clerk_peers: String,
         #[arg(long, default_value = "000")]
@@ -129,13 +133,13 @@ enum Commands {
         meta_dir: String,
         #[arg(long)]
         memory: bool,
-        /// Meta backend: redb | memory | postgres | mysql | tidb | http
+        /// Meta 后端：redb | memory | postgres | mysql | tidb | http
         #[arg(long, default_value = "redb", env = "OPENS3_META_BACKEND")]
         meta_backend: String,
-        /// Postgres / MySQL / TiDB URL (`postgres://` or `mysql://`)
+        /// Postgres / MySQL / TiDB URL（`postgres://` 或 `mysql://`）
         #[arg(long, env = "DATABASE_URL")]
         database_url: Option<String>,
-        /// When meta-backend=http, share metadata via remote Filer `/store` API
+        /// meta-backend=http 时，经远程 Filer `/store` 共享元数据
         #[arg(long, default_value = "")]
         filer_url: String,
         #[arg(long, env = "OPENS3_ACCESS_KEY")]
@@ -144,7 +148,7 @@ enum Commands {
         secret_key: Option<String>,
         #[arg(long)]
         encrypt: Option<String>,
-        /// Local KMS passphrase for SSE-KMS headers
+        /// SSE-KMS 本地口令
         #[arg(long, env = "OPENS3_KMS_KEY")]
         kms_key: Option<String>,
         #[arg(long, env = "OPENS3_VOLUME_JWT_SECRET")]
@@ -154,10 +158,10 @@ enum Commands {
         #[arg(long, env = "OPENS3_TLS_KEY")]
         tls_key: Option<String>,
     },
-    /// Run clerk + volume + s3 in one process (dev)
+    /// 单进程跑 clerk + volume + s3（开发用）
     Server {
         #[arg(long, default_value = "./data")]
-        dir: String,
+        dir: String, // 数据 / filer / raft 父目录
         #[arg(long, default_value = "9333")]
         clerk_port: u16,
         #[arg(long, default_value = "8080")]
@@ -179,22 +183,24 @@ enum Commands {
         #[arg(long, env = "OPENS3_TLS_KEY")]
         tls_key: Option<String>,
     },
-    /// Simple shell helpers
+    /// 简易运维 HTTP 辅助
     Shell {
         #[command(subcommand)]
         cmd: ShellCmd,
     },
-    /// FUSE mount placeholder (use S3/Filer HTTP; native FUSE is feature-gated later)
+    /// FUSE 挂载占位（优先 WebDAV；原生 FUSE 后续再开 feature）
     Fuse {
         #[arg(long, default_value = "http://127.0.0.1:8333")]
-        filer: String,
+        filer: String, // Filer/网关根 URL
         #[arg(long)]
-        mountpoint: String,
+        mountpoint: String, // 本地挂载点
     },
 }
 
+/// `opens3 shell` 子命令：直打 Clerk HTTP。
 #[derive(Subcommand, Debug)]
 enum ShellCmd {
+    /// 申请 file id / volume 位置
     Assign {
         #[arg(long, default_value = "http://127.0.0.1:9333")]
         clerk: String,
@@ -203,27 +209,33 @@ enum ShellCmd {
         #[arg(long, default_value = "000")]
         replication: String,
     },
+    /// 按 volume_id 查副本位置
     Lookup {
         #[arg(long, default_value = "http://127.0.0.1:9333")]
         clerk: String,
         volume_id: u32,
     },
+    /// 集群状态
     ClusterStatus {
         #[arg(long, default_value = "http://127.0.0.1:9333")]
         clerk: String,
     },
+    /// 列出卷
     VolumeList {
         #[arg(long, default_value = "http://127.0.0.1:9333")]
         clerk: String,
     },
+    /// 触发卷平衡
     VolumeBalance {
         #[arg(long, default_value = "http://127.0.0.1:9333")]
         clerk: String,
     },
+    /// 触发 heal
     Heal {
         #[arg(long, default_value = "http://127.0.0.1:9333")]
         clerk: String,
     },
+    /// Raft 状态
     RaftStatus {
         #[arg(long, default_value = "http://127.0.0.1:9333")]
         clerk: String,
@@ -258,7 +270,7 @@ async fn main() -> Result<()> {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
-            // Pod DNS names (e.g. opens3-clerk-0) are already unique; only bare IPs need :port.
+            // Pod DNS 名（如 opens3-clerk-0）已唯一；裸 IP 才拼 :port
             let node_id = if ip.parse::<std::net::IpAddr>().is_ok() {
                 format!("{ip}:{port}")
             } else {
@@ -272,7 +284,7 @@ async fn main() -> Result<()> {
             };
 
 
-            // 创建主服务器
+            // 启动 Clerk 并阻塞服务
             ClerkServer::new_with_opts(
                 node_id,
                 port,
@@ -310,7 +322,7 @@ async fn main() -> Result<()> {
             } else {
                 node_id
             };
-            let max_size = max_volume_size_mb.map(|m| m * 1024 * 1024);
+            let max_size = max_volume_size_mb.map(|m| m * 1024 * 1024); // MB → 字节
             let peers: Vec<String> = clerk_peers
                 .split(',')
                 .map(|s| s.trim().to_string())
@@ -351,6 +363,7 @@ async fn main() -> Result<()> {
             tls_cert,
             tls_key,
         } => {
+            // --memory 覆盖 meta-backend
             let backend = if memory {
                 "memory".into()
             } else {
@@ -374,7 +387,7 @@ async fn main() -> Result<()> {
                 tls,
                 None,
                 None,
-                Protocols::FILER,
+                Protocols::FILER, // 仅 Filer/WebDAV，不含 S3
             )
             .serve()
             .await?;
@@ -397,6 +410,7 @@ async fn main() -> Result<()> {
             tls_cert,
             tls_key,
         } => {
+            // 优先级：--memory > --filer-url > --meta-backend
             let backend = if memory {
                 "memory".into()
             } else if !filer_url.is_empty() {
@@ -416,6 +430,7 @@ async fn main() -> Result<()> {
             )
             .await?;
             let tls = opens3_common::tls::TlsConfig::from_opts(tls_cert, tls_key)?;
+            // 必须成对提供 AK/SK，否则不加身份
             let ak = match (access_key, secret_key) {
                 (Some(a), Some(s)) => Some((a, s)),
                 _ => None,
@@ -436,7 +451,7 @@ async fn main() -> Result<()> {
                 tls,
                 ak,
                 kms_key,
-                Protocols::ALL,
+                Protocols::ALL, // S3 + Filer
             )
             .serve()
             .await?;
@@ -454,6 +469,7 @@ async fn main() -> Result<()> {
             tls_cert,
             tls_key,
         } => {
+            // 一体机：先 Clerk，再 Volume，最后网关（同进程）
             let repl = Replication::from_str(&default_replication)?;
             let tls = opens3_common::tls::TlsConfig::from_opts(tls_cert, tls_key)?;
             let scheme = opens3_common::tls::scheme(tls.as_ref());
@@ -481,6 +497,7 @@ async fn main() -> Result<()> {
                     tracing::error!("clerk: {e}");
                 }
             });
+            // 给 Raft / HTTP 一点启动时间
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
             let max_size = max_volume_size_mb.map(|m| m * 1024 * 1024);
@@ -497,7 +514,7 @@ async fn main() -> Result<()> {
                 max_size,
                 jwt_secret.clone(),
                 tls.clone(),
-                true,
+                true, // 一体机默认上线
                 None,
             )?;
             tokio::spawn(async move {
@@ -533,7 +550,7 @@ async fn main() -> Result<()> {
             let filer = filer.trim_end_matches('/');
             let dav = format!("{filer}/dav");
             std::fs::create_dir_all(&mountpoint)?;
-            // Prefer davfs2 when available (Filer WebDAV gateway).
+            // 优先 davfs2（Filer WebDAV 网关）
             let davfs = ["mount.davfs", "davfs2"]
                 .into_iter()
                 .find(|b| std::process::Command::new("which").arg(b).output().ok().map(|o| o.status.success()).unwrap_or(false));
@@ -546,6 +563,7 @@ async fn main() -> Result<()> {
                     return Ok(());
                 }
             }
+            // 未链接原生 FUSE 时给出替代挂载说明
             anyhow::bail!(
                 "native kernel FUSE is not linked. Use a gateway mount:\n\n\
                  # WebDAV (Filer)\n\
@@ -609,6 +627,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// 按 backend 名打开对应 FilerStore；默认落 redb。
 async fn open_meta_store(
     backend: &str,
     meta_dir: &str,
@@ -623,7 +642,7 @@ async fn open_meta_store(
             })?;
             Ok(Arc::new(PostgresStore::connect(url).await?))
         }
-        // TiDB is MySQL-protocol compatible; same MysqlStore + mysql:// URL.
+        // TiDB 走 MySQL 协议；同一 MysqlStore + mysql://
         "mysql" | "tidb" => {
             let url = database_url.ok_or_else(|| {
                 anyhow::anyhow!("{backend} meta-backend requires --database-url / DATABASE_URL")
@@ -637,22 +656,23 @@ async fn open_meta_store(
             Ok(Arc::new(HttpStore::new(url)))
         }
         _ => {
+            // redb 及其他未知名 → 本地文件
             std::fs::create_dir_all(meta_dir)?;
             Ok(Arc::new(RedbStore::open(format!("{meta_dir}/meta.redb"))?))
         }
     }
 }
 
+/// Volume 首次注册时的上线 / 副本配对意图。
 struct VolumeBootstrap {
-    start_online: bool,
-    replica_of: Option<String>,
+    start_online: bool,              // 是否立即 online
+    replica_of: Option<String>,      // 作为谁的副本
 }
 
-/// Merge CLI/env flags with optional per-ordinal bootstrap JSON from Helm ConfigMap.
+/// 合并 CLI/env 与 Helm ConfigMap 中按 ordinal 的 bootstrap JSON。
 ///
-/// Precedence: explicit `--start-online` / `--replica-of` win over the file. If
-/// `bootstrap_dir` is set but the ordinal file is missing (Web scale-add), force
-/// offline so Admin can pair/online from the UI.
+/// 优先级：显式 `--start-online` / `--replica-of` 覆盖文件。若设置了
+/// `bootstrap_dir` 但 ordinal 文件缺失（Web 扩容），强制离线以便 Admin UI 配对。
 fn load_volume_bootstrap(
     node_id: &str,
     bootstrap_dir: &str,
@@ -670,12 +690,14 @@ fn load_volume_bootstrap(
 
     let dir = bootstrap_dir.trim();
     if dir.is_empty() {
+        // 无 bootstrap 目录：完全听 CLI
         return VolumeBootstrap {
             start_online: cli_start_online,
             replica_of: cli_replica,
         };
     }
 
+    // StatefulSet pod 名末段作 ordinal，如 opens3-volume-2 → "2"
     let ordinal = node_id.rsplit('-').next().unwrap_or("");
     let path = std::path::Path::new(dir).join(ordinal);
     if !path.is_file() {
@@ -685,7 +707,7 @@ fn load_volume_bootstrap(
             "volume bootstrap file missing — starting offline for Admin ops"
         );
         return VolumeBootstrap {
-            start_online: false,
+            start_online: false, // 缺文件 → 离线等 Admin
             replica_of: cli_replica,
         };
     }
@@ -694,11 +716,13 @@ fn load_volume_bootstrap(
     let mut replica_of = cli_replica;
     if let Ok(bytes) = std::fs::read(&path) {
         if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            // CLI 未要求上线时，才读文件里的 online
             if !cli_start_online {
                 if let Some(o) = v.get("online").and_then(|x| x.as_bool()) {
                     start_online = o;
                 }
             }
+            // CLI 未指定 replica 时，接受 replicaOf / replica_of
             if replica_of.is_none() {
                 let src = v
                     .get("replicaOf")

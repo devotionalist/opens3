@@ -1,6 +1,6 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
-//! Remote FilerStore over Filer HTTP `/store/*` API — multiple S3 gateways share one Filer.
+//! 通过 Filer HTTP `/store/*` 共享元数据；多 S3 网关挂同一 Filer。
 
 use crate::FilerStore;
 use async_trait::async_trait;
@@ -8,13 +8,15 @@ use opens3_common::types::EntryMeta;
 use opens3_common::{Error, Result};
 use serde::{Deserialize, Serialize};
 
+/// 远程 FilerStore：把 CRUD 转发到 Filer 的 `/store` API。
 #[derive(Clone)]
 pub struct HttpStore {
-    base: String,
-    http: reqwest::Client,
+    base: String,          // Filer 根 URL（无尾斜杠）
+    http: reqwest::Client, // 复用连接池
 }
 
 impl HttpStore {
+    /// `filer_url` 如 `http://filer:8333`；末尾 `/` 会被去掉。
     pub fn new(filer_url: impl Into<String>) -> Self {
         Self {
             base: filer_url.into().trim_end_matches('/').to_string(),
@@ -23,11 +25,13 @@ impl HttpStore {
     }
 }
 
+/// PUT/GET entry 的 JSON 包装。
 #[derive(Serialize, Deserialize)]
 struct EntryBody {
     entry: EntryMeta,
 }
 
+/// `/store/prefix` 响应。
 #[derive(Deserialize)]
 struct ListPrefixResp {
     items: Vec<ListItem>,
@@ -35,15 +39,17 @@ struct ListPrefixResp {
 
 #[derive(Deserialize)]
 struct ListItem {
-    path: String,
-    entry: EntryMeta,
+    path: String,      // 绝对路径
+    entry: EntryMeta,  // 元数据
 }
 
+/// `/store/list` 响应。
 #[derive(Deserialize)]
 struct ListDirResp {
     entries: Vec<EntryMeta>,
 }
 
+/// `/store/kv/{ns}` 列表响应。
 #[derive(Deserialize)]
 struct KvListResp {
     items: Vec<KvItem>,
@@ -51,8 +57,8 @@ struct KvListResp {
 
 #[derive(Deserialize)]
 struct KvItem {
-    key: String,
-    value_b64: String,
+    key: String,       // 业务 key（不含 ns）
+    value_b64: String, // base64 编码的值
 }
 
 #[async_trait]
@@ -69,6 +75,7 @@ impl FilerStore for HttpStore {
             .send()
             .await
             .map_err(|e| Error::Internal(e.to_string()))?;
+        // Filer 用 409 表示路径冲突
         if resp.status().as_u16() == 409 {
             return Err(Error::AlreadyExists(path.to_string()));
         }
@@ -209,6 +216,7 @@ impl FilerStore for HttpStore {
 
     async fn kv_delete(&self, ns: &str, key: &str) -> Result<()> {
         let url = format!("{}/store/kv/{ns}/{key}", self.base);
+        // 忽略网络/状态错误，保持接口幂等
         let _ = self.http.delete(&url).send().await;
         Ok(())
     }
@@ -241,6 +249,7 @@ impl FilerStore for HttpStore {
     }
 }
 
+/// 保证路径以 `/` 开头，供拼进 URL path。
 fn path_encode(path: &str) -> String {
     if path.is_empty() || path == "/" {
         "/".into()

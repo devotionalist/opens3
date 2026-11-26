@@ -1,9 +1,8 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
-//! Raft log + state machine store.
+//! Raft 日志 + 状态机存储。
 //!
-//! Log durability is an append-only WAL (`openraft-log.wal`); the state machine
-//! still uses atomic JSON/bin snapshots.
+//! 日志持久化为追加写 WAL（`openraft-log.wal`）；状态机仍用原子 JSON/bin 快照。
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;
@@ -25,22 +24,25 @@ use super::wal::{approx_entry_bytes, migrate_legacy_json, Wal, WalState};
 use super::{NodeId, RaftRequest, RaftResponse, TypeConfig};
 use crate::cluster::{ClusterSnapshot, ClusterState};
 
-// ── Log store ───────────────────────────────────────────────────────────────
+// ── 日志存储 ────────────────────────────────────────────────────────────────
 
+/// openraft 日志存储（内存 + 可选 WAL）。
 #[derive(Clone)]
 pub struct LogStore<C: RaftTypeConfig> {
     inner: Arc<Mutex<LogStoreInner<C>>>,
 }
 
+/// 日志存储内部态。
 struct LogStoreInner<C: RaftTypeConfig> {
-    last_purged_log_id: Option<LogId<C::NodeId>>,
-    log: BTreeMap<u64, C::Entry>,
-    committed: Option<LogId<C::NodeId>>,
-    vote: Option<Vote<C::NodeId>>,
-    wal: Option<Wal>,
+    last_purged_log_id: Option<LogId<C::NodeId>>, // 已 purge 边界
+    log: BTreeMap<u64, C::Entry>,                 // index → entry
+    committed: Option<LogId<C::NodeId>>,          // 已提交点
+    vote: Option<Vote<C::NodeId>>,                // 持久化投票
+    wal: Option<Wal>,                             // 磁盘 WAL；测试可为空
 }
 
 impl Default for LogStoreInner<TypeConfig> {
+    /// 空内存态（无 WAL）。
     fn default() -> Self {
         Self {
             last_purged_log_id: None,
@@ -53,6 +55,7 @@ impl Default for LogStoreInner<TypeConfig> {
 }
 
 impl LogStoreInner<TypeConfig> {
+    /// 由 WAL 回放态构造内部结构。
     fn from_wal_state(state: WalState, wal: Option<Wal>) -> Self {
         Self {
             last_purged_log_id: state.last_purged_log_id,
@@ -63,6 +66,7 @@ impl LogStoreInner<TypeConfig> {
         }
     }
 
+    /// 导出当前内存态供 WAL compact。
     fn snapshot_state(&self) -> WalState {
         WalState {
             last_purged_log_id: self.last_purged_log_id.clone(),
@@ -72,6 +76,7 @@ impl LogStoreInner<TypeConfig> {
         }
     }
 
+    /// 删除区间内日志，返回移除的近似字节数。
     fn remove_log_range(&mut self, range: impl RangeBounds<u64>) -> u64 {
         let keys: Vec<_> = self.log.range(range).map(|(k, _)| *k).collect();
         let mut removed = 0u64;
@@ -83,6 +88,7 @@ impl LogStoreInner<TypeConfig> {
         removed
     }
 
+    /// 若 WAL 浪费达标则 rewrite compact。
     fn maybe_compact(&mut self) -> Result<(), StorageError<NodeId>> {
         if !self.wal.as_ref().is_some_and(|w| w.needs_compact()) {
             return Ok(());
@@ -96,6 +102,7 @@ impl LogStoreInner<TypeConfig> {
 }
 
 impl LogStore<TypeConfig> {
+    /// 打开目录下 WAL；若无则先尝试迁移旧 JSON。
     pub fn open(dir: &Path) -> anyhow::Result<Self> {
         let wal_path = dir.join("openraft-log.wal");
         if !wal_path.exists() {
@@ -109,6 +116,7 @@ impl LogStore<TypeConfig> {
 }
 
 impl Default for LogStore<TypeConfig> {
+    /// 仅内存 LogStore（测试用）。
     fn default() -> Self {
         Self {
             inner: Arc::new(Mutex::new(LogStoreInner::default())),
@@ -117,6 +125,7 @@ impl Default for LogStore<TypeConfig> {
 }
 
 impl RaftLogReader<TypeConfig> for LogStore<TypeConfig> {
+    /// 按 index 区间读取日志条目。
     async fn try_get_log_entries<RB: RangeBounds<u64> + Clone + Debug>(
         &mut self,
         range: RB,
@@ -133,6 +142,7 @@ impl RaftLogReader<TypeConfig> for LogStore<TypeConfig> {
 impl RaftLogStorage<TypeConfig> for LogStore<TypeConfig> {
     type LogReader = Self;
 
+    /// 返回 last_purged / last_log。
     async fn get_log_state(&mut self) -> Result<LogState<TypeConfig>, StorageError<NodeId>> {
         let inner = self.inner.lock().await;
         let last_purged = inner.last_purged_log_id.clone();
@@ -148,6 +158,7 @@ impl RaftLogStorage<TypeConfig> for LogStore<TypeConfig> {
         })
     }
 
+    /// 持久化 committed 点到内存与 WAL。
     async fn save_committed(
         &mut self,
         committed: Option<LogId<NodeId>>,
@@ -161,10 +172,12 @@ impl RaftLogStorage<TypeConfig> for LogStore<TypeConfig> {
         Ok(())
     }
 
+    /// 读取已保存的 committed。
     async fn read_committed(&mut self) -> Result<Option<LogId<NodeId>>, StorageError<NodeId>> {
         Ok(self.inner.lock().await.committed.clone())
     }
 
+    /// 持久化 Vote。
     async fn save_vote(&mut self, vote: &Vote<NodeId>) -> Result<(), StorageError<NodeId>> {
         let mut inner = self.inner.lock().await;
         inner.vote = Some(vote.clone());
@@ -175,10 +188,12 @@ impl RaftLogStorage<TypeConfig> for LogStore<TypeConfig> {
         Ok(())
     }
 
+    /// 读取 Vote。
     async fn read_vote(&mut self) -> Result<Option<Vote<NodeId>>, StorageError<NodeId>> {
         Ok(self.inner.lock().await.vote.clone())
     }
 
+    /// 追加日志条目并 fsync；完成后回调 LogFlushed。
     async fn append<I>(
         &mut self,
         entries: I,
@@ -201,6 +216,7 @@ impl RaftLogStorage<TypeConfig> for LogStore<TypeConfig> {
         Ok(())
     }
 
+    /// 自 `log_id.index` 起截断冲突日志。
     async fn truncate(&mut self, log_id: LogId<NodeId>) -> Result<(), StorageError<NodeId>> {
         let mut inner = self.inner.lock().await;
         let removed = inner.remove_log_range(log_id.index..);
@@ -213,7 +229,9 @@ impl RaftLogStorage<TypeConfig> for LogStore<TypeConfig> {
         Ok(())
     }
 
+    /// 清理已快照覆盖的旧日志（含 `log_id`）。
     async fn purge(&mut self, log_id: LogId<NodeId>) -> Result<(), StorageError<NodeId>> {
+        // purge 边界必须单调不减
         let mut inner = self.inner.lock().await;
         assert!(inner.last_purged_log_id.as_ref() <= Some(&log_id));
         inner.last_purged_log_id = Some(log_id.clone());
@@ -227,38 +245,43 @@ impl RaftLogStorage<TypeConfig> for LogStore<TypeConfig> {
         Ok(())
     }
 
+    /// 返回可并发读的日志 reader（克隆句柄）。
     async fn get_log_reader(&mut self) -> Self::LogReader {
         self.clone()
     }
 }
 
-// ── State machine ───────────────────────────────────────────────────────────
+// ── 状态机 ──────────────────────────────────────────────────────────────────
 
+/// 内存中的 Raft 快照副本。
 #[derive(Debug)]
 pub struct StoredSnapshot {
-    pub meta: SnapshotMeta<NodeId, openraft::BasicNode>,
-    pub data: Vec<u8>,
+    pub meta: SnapshotMeta<NodeId, openraft::BasicNode>, // 快照元数据
+    pub data: Vec<u8>,                                   // 序列化状态机字节
 }
 
+/// 持久化状态机内容。
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct StateMachineData {
-    pub last_applied_log: Option<LogId<NodeId>>,
-    pub last_membership: StoredMembership<NodeId, openraft::BasicNode>,
-    /// Last applied cluster snapshot payload (for Raft snapshot rebuild).
+    pub last_applied_log: Option<LogId<NodeId>>, // 最后应用日志
+    pub last_membership: StoredMembership<NodeId, openraft::BasicNode>, // 成员配置
+    /// 最近一次应用的集群快照载荷（用于重建 Raft snapshot）。
     pub cluster_json: Option<serde_json::Value>,
 }
 
+/// 集群拓扑状态机：apply Raft 日志并落盘。
 pub struct StateMachineStore {
     pub state_machine: RwLock<StateMachineData>,
-    snapshot_idx: AtomicU64,
+    snapshot_idx: AtomicU64, // 本地快照序号
     current_snapshot: RwLock<Option<StoredSnapshot>>,
-    /// Live cluster topology shared with ClerkServer HTTP handlers.
+    /// 与 ClerkServer HTTP 共享的实时拓扑。
     cluster: ClusterState,
-    sm_path: Option<PathBuf>,
-    snap_path: Option<PathBuf>,
+    sm_path: Option<PathBuf>,   // openraft-sm.json
+    snap_path: Option<PathBuf>, // openraft-snapshot.bin
 }
 
 impl StateMachineStore {
+    /// 仅内存态（无落盘路径），供测试。
     pub fn new(cluster: ClusterState) -> Self {
         Self {
             state_machine: Default::default(),
@@ -270,6 +293,7 @@ impl StateMachineStore {
         }
     }
 
+    /// 从目录加载状态机 JSON 与快照 bin。
     pub fn open(dir: &Path, cluster: ClusterState) -> anyhow::Result<Self> {
         let sm_path = dir.join("openraft-sm.json");
         let snap_path = dir.join("openraft-snapshot.bin");
@@ -301,6 +325,7 @@ impl StateMachineStore {
         Ok(store)
     }
 
+    /// 原子写状态机 JSON（tmp + rename）。
     fn persist_sm(data: &StateMachineData, path: &Path) -> Result<(), StorageError<NodeId>> {
         let bytes =
             serde_json::to_vec(data).map_err(|e| StorageIOError::write_state_machine(&e))?;
@@ -310,6 +335,7 @@ impl StateMachineStore {
         Ok(())
     }
 
+    /// 原子写快照 bin（tmp + rename）。
     fn persist_snapshot(
         snap: &StoredSnapshot,
         path: &Path,
@@ -325,6 +351,7 @@ impl StateMachineStore {
         Ok(())
     }
 
+    /// 将 ClusterMutation 载荷导入内存 ClusterState（仅 `op=snapshot`）。
     fn apply_payload(&self, payload: &serde_json::Value) {
         if payload.get("op").and_then(|v| v.as_str()) != Some("snapshot") {
             return;
@@ -337,6 +364,7 @@ impl StateMachineStore {
     }
 }
 
+/// 磁盘上的快照封套（meta + data）。
 #[derive(Serialize, Deserialize)]
 struct PersistedSnapshot {
     meta: SnapshotMeta<NodeId, openraft::BasicNode>,
@@ -344,6 +372,7 @@ struct PersistedSnapshot {
 }
 
 impl RaftSnapshotBuilder<TypeConfig> for Arc<StateMachineStore> {
+    /// 序列化当前状态机构建 Raft 快照并落盘。
     async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfig>, StorageError<NodeId>> {
         let state_machine = self.state_machine.read().await;
         let data =
@@ -387,6 +416,7 @@ impl RaftSnapshotBuilder<TypeConfig> for Arc<StateMachineStore> {
 impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
     type SnapshotBuilder = Self;
 
+    /// 返回 last_applied 与 membership。
     async fn applied_state(
         &mut self,
     ) -> Result<(Option<LogId<NodeId>>, StoredMembership<NodeId, openraft::BasicNode>), StorageError<NodeId>>
@@ -395,6 +425,7 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
         Ok((sm.last_applied_log, sm.last_membership.clone()))
     }
 
+    /// 顺序 apply 日志：Blank / ClusterMutation / Membership。
     async fn apply<I>(&mut self, entries: I) -> Result<Vec<RaftResponse>, StorageError<NodeId>>
     where
         I: IntoIterator<Item = Entry<TypeConfig>> + Send,
@@ -427,12 +458,14 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
         Ok(res)
     }
 
+    /// 开始接收快照：返回可写缓冲区。
     async fn begin_receiving_snapshot(
         &mut self,
     ) -> Result<Box<Cursor<Vec<u8>>>, StorageError<NodeId>> {
         Ok(Box::new(Cursor::new(Vec::new())))
     }
 
+    /// 安装完整快照：导入拓扑并持久化。
     async fn install_snapshot(
         &mut self,
         meta: &SnapshotMeta<NodeId, openraft::BasicNode>,
@@ -467,6 +500,7 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
         Ok(())
     }
 
+    /// 返回当前已构建的快照（若有）。
     async fn get_current_snapshot(
         &mut self,
     ) -> Result<Option<Snapshot<TypeConfig>>, StorageError<NodeId>> {
@@ -479,6 +513,7 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
         }
     }
 
+    /// 快照构建器即自身 Arc。
     async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
         self.clone()
     }

@@ -1,14 +1,15 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
-//! Map Volume HTTP public URLs to the co-located gRPC listener (HTTP port + 10000).
+//! 将 Volume HTTP public URL 映射到同机 gRPC 监听地址（HTTP 端口 + 10000）。
 
-/// Convert `http://host:8080` → `http://host:18080` (tonic endpoint).
-/// Returns `None` if the URL cannot be parsed or the port would overflow.
+/// 将 `http://host:8080` 转为 tonic 端点 `http://host:18080`。
+/// 解析失败或端口溢出时返回 `None`。
 pub fn volume_grpc_endpoint(http_url: &str) -> Option<String> {
     let raw = http_url.trim().trim_end_matches('/');
     if raw.is_empty() {
         return None;
     }
+    // 去掉 scheme，保留 authority（及后续 path，随后截断）
     let without_scheme = raw
         .strip_prefix("https://")
         .or_else(|| raw.strip_prefix("http://"))
@@ -17,6 +18,7 @@ pub fn volume_grpc_endpoint(http_url: &str) -> Option<String> {
     if authority.is_empty() {
         return None;
     }
+    // IPv6 `[::1]:port` 与 host:port / 无端口 三种形式
     let (host, port): (String, u16) = if authority.starts_with('[') {
         let end = authority.find(']')?;
         let host = &authority[..=end];
@@ -30,12 +32,13 @@ pub fn volume_grpc_endpoint(http_url: &str) -> Option<String> {
         if p.chars().all(|c| c.is_ascii_digit()) {
             (h.to_string(), p.parse().ok()?)
         } else {
+            // 冒号后非纯数字：当作无端口主机名
             (authority.to_string(), 80)
         }
     } else {
         (authority.to_string(), 80)
     };
-    let grpc_port = port.checked_add(10_000)?;
+    let grpc_port = port.checked_add(10_000)?; // gRPC = HTTP + 10000
     Some(format!("http://{host}:{grpc_port}"))
 }
 

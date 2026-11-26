@@ -1,6 +1,6 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
-//! Admin cluster topology, traffic scrape, and ops (heal / balance / scale).
+//! Admin 集群拓扑、流量抓取与运维（heal / balance / scale）。
 
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -13,52 +13,58 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::server::AppState;
 
+// K8s Pod 摘要（拓扑展示用）
 #[derive(Clone, Debug)]
 struct K8sPodInfo {
-    name: String,
-    component: String,
-    ip: String,
-    phase: String,
-    ready: bool,
-    restarting: bool,
-    reason: String,
+    name: String, // Pod 名
+    component: String, // 组件：clerk/volume/filer 等
+    ip: String, // Pod IP
+    phase: String, // K8s phase
+    ready: bool, // Ready 条件
+    restarting: bool, // 是否处于重启/崩溃态
+    reason: String, // 容器 Waiting/Terminated reason
     /// Kubernetes worker node (spec.nodeName).
-    node_name: String,
+    node_name: String, // 所在 worker 节点
 }
 
+/// 拓扑图节点
 #[derive(Clone, serde::Serialize)]
 pub struct TopoNode {
-    pub id: String,
-    pub kind: String,
-    pub label: String,
-    pub url: String,
-    pub status: String,
-    pub meta: serde_json::Value,
+    pub id: String, // 节点唯一 id
+    pub kind: String, // 节点类型
+    pub label: String, // 展示标签
+    pub url: String, // 服务 URL
+    pub status: String, // up/down 等
+    pub meta: serde_json::Value, // 扩展元数据 JSON
 }
 
+/// 拓扑图边（含流量速率）
 #[derive(Clone, serde::Serialize)]
 pub struct TopoEdge {
-    pub from: String,
-    pub to: String,
-    pub kind: String,
-    pub label: String,
-    pub bytes_per_sec: f64,
-    pub ops_per_sec: f64,
-    pub bytes_total: f64,
-    pub ops_total: f64,
+    pub from: String, // 边起点 id
+    pub to: String, // 边终点 id
+    pub kind: String, // 边类型
+    pub label: String, // 展示标签
+    pub bytes_per_sec: f64, // 字节速率
+    pub ops_per_sec: f64, // 操作速率
+    pub bytes_total: f64, // 累计字节
+    pub ops_total: f64, // 累计操作
 }
 
+// 一次 Prometheus 计数采样
 #[derive(Default)]
 struct TrafficSample {
-    at: Option<Instant>,
-    counters: HashMap<String, f64>,
+    at: Option<Instant>, // 采样时刻
+    counters: HashMap<String, f64>, // metric 名 -> 累计计数
 }
 
+// 流量采样状态：上次计数 + 速率
 struct TrafficState {
-    prev: TrafficSample,
-    rates: HashMap<String, f64>,
+    prev: TrafficSample, // 上一次采样
+    rates: HashMap<String, f64>, // metric 名 -> 当前速率
 }
 
+// 全局 TrafficState 单例锁
 fn traffic_state() -> std::sync::MutexGuard<'static, TrafficState> {
     static TRAFFIC: std::sync::OnceLock<Mutex<TrafficState>> = std::sync::OnceLock::new();
     TRAFFIC
@@ -72,6 +78,7 @@ fn traffic_state() -> std::sync::MutexGuard<'static, TrafficState> {
         .unwrap_or_else(|e| e.into_inner())
 }
 
+// 当前 UNIX 秒
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -79,6 +86,7 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
+// 带 2s 超时的 HTTP GET 文本
 async fn fetch_text(client: &reqwest::Client, url: &str) -> Option<String> {
     client
         .get(url)
@@ -93,6 +101,7 @@ async fn fetch_text(client: &reqwest::Client, url: &str) -> Option<String> {
         .ok()
 }
 
+// 汇总 Prometheus 文本中同名 metric 的值
 fn parse_prom_sum(text: &str, metric: &str) -> f64 {
     let mut sum = 0.0;
     for line in text.lines() {
@@ -112,6 +121,7 @@ fn parse_prom_sum(text: &str, metric: &str) -> f64 {
     sum
 }
 
+// 由相邻两次计数差分计算速率
 fn update_rates(counters: HashMap<String, f64>) -> HashMap<String, f64> {
     let mut g = traffic_state();
     let now = Instant::now();
@@ -131,6 +141,7 @@ fn update_rates(counters: HashMap<String, f64>) -> HashMap<String, f64> {
     rates
 }
 
+// 抓取 S3/Clerk/Volume /metrics 计数
 async fn scrape_counters(
     client: &reqwest::Client,
     s3_port: u16,
@@ -184,11 +195,13 @@ async fn scrape_counters(
     counters
 }
 
+// 是否运行在 K8s 环境
 fn in_kubernetes() -> bool {
     std::path::Path::new("/var/run/secrets/kubernetes.io/serviceaccount/token").exists()
         || std::env::var_os("KUBERNETES_SERVICE_HOST").is_some()
 }
 
+// 读 usize 环境变量
 fn env_usize(key: &str, default: usize) -> usize {
     std::env::var(key)
         .ok()
@@ -196,6 +209,7 @@ fn env_usize(key: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+// 读 u16 环境变量
 fn env_u16(key: &str, default: u16) -> u16 {
     std::env::var(key)
         .ok()
@@ -203,6 +217,7 @@ fn env_u16(key: &str, default: u16) -> u16 {
         .unwrap_or(default)
 }
 
+// 将 Pod 相位映射为 up/down/pending 等
 fn pod_status(p: &K8sPodInfo) -> &'static str {
     if p.restarting || p.reason == "CrashLoopBackOff" || p.reason == "OOMKilled" {
         return "crashloop";
@@ -218,6 +233,7 @@ fn pod_status(p: &K8sPodInfo) -> &'static str {
     }
 }
 
+// 列举命名空间内 opens3 相关 Pod
 async fn list_k8s_pods() -> Vec<K8sPodInfo> {
     if !in_kubernetes() {
         return Vec::new();
@@ -355,6 +371,7 @@ async fn list_k8s_pods() -> Vec<K8sPodInfo> {
     out
 }
 
+// URI 百分号编码
 fn urlencoding_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 2);
     for b in s.bytes() {
@@ -371,6 +388,7 @@ fn urlencoding_encode(s: &str) -> String {
     out
 }
 
+// 按 StatefulSet 拼 clerk/volume DNS URL
 fn k8s_sts_urls(kind: &str) -> Vec<(String, String)> {
     if !in_kubernetes() {
         return Vec::new();
@@ -407,8 +425,8 @@ fn k8s_sts_urls(kind: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Resolve which clerk pod is Raft leader.
-/// openraft exposes `leader` as a numeric NodeId (`"0"`) and `leader_url` as the advertise URL.
+/// 解析哪一个 clerk Pod 是 Raft leader。
+/// openraft 的 `leader` 为数字 NodeId（如 `"0"`），`leader_url` 为 advertise URL。
 fn leader_pod_name(
     cluster: &Option<serde_json::Value>,
     clerks: &[(String, String)],
@@ -470,12 +488,14 @@ fn leader_pod_name(
     None
 }
 
+// 判断 Pod 是否为当前 Raft leader
 fn pod_is_raft_leader(cluster: &Option<serde_json::Value>, pod_name: &str) -> bool {
     leader_pod_name(cluster, &[(pod_name.to_string(), String::new())])
         .as_deref()
         == Some(pod_name)
 }
 
+// 拓扑中 leader clerk 节点 id
 fn leader_clerk_id(cluster: &Option<serde_json::Value>, clerks: &[(String, String)]) -> String {
     if let Some(n) = leader_pod_name(cluster, clerks) {
         return format!("clerk-{n}");
@@ -486,6 +506,7 @@ fn leader_clerk_id(cluster: &Option<serde_json::Value>, clerks: &[(String, Strin
         .unwrap_or_else(|| "clerk".into())
 }
 
+/// Admin 拓扑：节点/边/流量/容量汇总
 pub(crate) async fn admin_topology(State(st): State<AppState>) -> impl IntoResponse {
     let client = reqwest::Client::new();
     let clerk_svc = st.server.blob.clerk_url().trim_end_matches('/').to_string();
@@ -494,6 +515,7 @@ pub(crate) async fn admin_topology(State(st): State<AppState>) -> impl IntoRespo
     let k8s = in_kubernetes();
     let k8s_pods = list_k8s_pods().await;
 
+    // 拉取 Clerk 集群状态（含 Raft leader）
     let mut cluster: Option<serde_json::Value> = None;
     let clerk_svc_ok = match fetch_text(&client, &format!("{clerk_svc}/cluster/status")).await {
         Some(body) => {
@@ -511,11 +533,11 @@ pub(crate) async fn admin_topology(State(st): State<AppState>) -> impl IntoRespo
     let mut seen_volume = HashSet::new();
     let mut seen_clerk = HashSet::new();
     let mut seen_s3 = HashSet::new();
-    // Collect Deployment pods first so we can assign stable ordinal IDs
-    // (filer-0) that survive ReplicaSet rollouts — required for
-    // persisting manual topology layout across refreshes.
+    // 先收集 Filer Deployment Pod，再赋稳定 ordinal（filer-0），
+    // 以便 ReplicaSet 滚动后仍能恢复手动拓扑布局。
     let mut filer_pods: Vec<&K8sPodInfo> = Vec::new();
 
+    // K8s 路径：按 component 构建 clerk / volume / filer 节点
     if !k8s_pods.is_empty() {
         let clerk_port = env_u16("OPENS3_CLERK_PORT", 9333);
         let volume_port = env_u16("OPENS3_VOLUME_PORT", 8080);
@@ -857,6 +879,7 @@ pub(crate) async fn admin_topology(State(st): State<AppState>) -> impl IntoRespo
     }
 
     // Double-scrape so one API call can return non-zero rates.
+    // 连续抓两次 metrics，用于差分算速率
     let c1 = scrape_counters(&client, s3_port, &clerk_svc, &volume_urls).await;
     let _ = update_rates(c1);
     tokio::time::sleep(Duration::from_millis(400)).await;
@@ -887,7 +910,7 @@ pub(crate) async fn admin_topology(State(st): State<AppState>) -> impl IntoRespo
         .filter(|n| n.kind == "filer")
         .map(|n| n.id.clone())
         .collect();
-    // Fallback: env points at shared Filer even if pod discovery missed it.
+    // 回退：Pod 未发现时用环境变量中的共享 Filer URL
     if filer_ids.is_empty() {
         if let Ok(url) = std::env::var("OPENS3_FILER_URL") {
             let url = url.trim_end_matches('/').to_string();
@@ -919,7 +942,7 @@ pub(crate) async fn admin_topology(State(st): State<AppState>) -> impl IntoRespo
         .map(|n| n.id.clone())
         .collect();
 
-    // Shared metadata store (Postgres / MySQL / …) — gateways open it in-process.
+    // 共享元数据库（Postgres / MySQL …）；网关进程内打开连接
     let mut metadb_ids: Vec<String> = Vec::new();
     let mut pg_pods: Vec<&K8sPodInfo> = k8s_pods
         .iter()
@@ -1520,6 +1543,7 @@ pub(crate) async fn admin_topology(State(st): State<AppState>) -> impl IntoRespo
     }))
 }
 
+// 从卷 JSON 取复制码
 fn replication_code_of(vol: &serde_json::Value) -> String {
     if let Some(s) = vol.get("replication").and_then(|v| v.as_str()) {
         return s.to_string();
@@ -1536,6 +1560,7 @@ fn replication_code_of(vol: &serde_json::Value) -> String {
     "000".into()
 }
 
+// 复制码对应副本份数
 fn replication_copies(code: &str) -> u64 {
     if code.len() != 3 || !code.bytes().all(|b| b.is_ascii_digit()) {
         return 1;
@@ -1544,6 +1569,7 @@ fn replication_copies(code: &str) -> u64 {
     1 + (b[0] - b'0') as u64 + (b[1] - b'0') as u64 + (b[2] - b'0') as u64
 }
 
+// 复制码人类可读描述
 fn replication_desc(code: &str) -> String {
     match code {
         "000" => "单副本".into(),
@@ -1555,6 +1581,7 @@ fn replication_desc(code: &str) -> String {
     }
 }
 
+// 扩缩容提示（STS 名/默认副本）
 fn scale_hints() -> serde_json::Value {
     let ns = std::env::var("OPENS3_K8S_NAMESPACE").unwrap_or_else(|_| "opens3".into());
     let release = std::env::var("OPENS3_HELM_RELEASE").unwrap_or_else(|_| "opens3".into());
@@ -1570,12 +1597,14 @@ fn scale_hints() -> serde_json::Value {
     })
 }
 
+/// 扩缩容请求
 #[derive(Deserialize)]
 pub struct ScaleReq {
-    pub component: String,
-    pub replicas: u32,
+    pub component: String, // 组件名
+    pub replicas: u32, // 目标副本数
 }
 
+/// Admin：缩放 StatefulSet 副本数
 pub(crate) async fn admin_ops_scale(Json(req): Json<ScaleReq>) -> Response {
     let hints = scale_hints();
     // Clerk StatefulSet uses emptyDir for Raft; one-click scale/restart causes
@@ -1677,14 +1706,17 @@ pub(crate) async fn admin_ops_scale(Json(req): Json<ScaleReq>) -> Response {
     }
 }
 
+/// Admin：触发 heal
 pub(crate) async fn admin_ops_heal(State(st): State<AppState>) -> Response {
     proxy_clerk_post(&st, "/cluster/heal").await
 }
 
+/// Admin：获取 assign 策略
 pub(crate) async fn admin_ops_assign_policy_get(State(st): State<AppState>) -> Response {
     proxy_clerk_get(&st, "/cluster/assign-policy").await
 }
 
+/// Admin：设置 assign 策略
 pub(crate) async fn admin_ops_assign_policy_set(
     State(st): State<AppState>,
     Json(body): Json<serde_json::Value>,
@@ -1692,14 +1724,17 @@ pub(crate) async fn admin_ops_assign_policy_set(
     proxy_clerk_post_json(&st, "/cluster/assign-policy", body).await
 }
 
+/// Admin：heal 状态
 pub(crate) async fn admin_ops_heal_status(State(st): State<AppState>) -> Response {
     proxy_clerk_get(&st, "/cluster/heal/status").await
 }
 
+/// Admin：获取 heal 带宽限制
 pub(crate) async fn admin_ops_heal_bandwidth_get(State(st): State<AppState>) -> Response {
     proxy_clerk_get(&st, "/cluster/heal-bandwidth").await
 }
 
+/// Admin：设置 heal 带宽限制
 pub(crate) async fn admin_ops_heal_bandwidth_set(
     State(st): State<AppState>,
     Json(body): Json<serde_json::Value>,
@@ -1707,16 +1742,20 @@ pub(crate) async fn admin_ops_heal_bandwidth_set(
     proxy_clerk_post_json(&st, "/cluster/heal-bandwidth", body).await
 }
 
+/// Admin：触发卷均衡
 pub(crate) async fn admin_ops_balance(State(st): State<AppState>) -> Response {
     proxy_clerk_post(&st, "/cluster/balance").await
 }
 
+/// 创建卷查询参数
 #[derive(Deserialize)]
+/// 创建卷查询参数
 pub struct CreateVolQuery {
-    pub volume_url: String,
-    pub id: u32,
+    pub volume_url: String, // Volume HTTP 基址
+    pub id: u32,            // 卷 ID
 }
 
+/// Admin：创建卷
 pub(crate) async fn admin_ops_create_volume(Query(q): Query<CreateVolQuery>) -> Response {
     let url = format!(
         "{}/admin/create_volume/{}",
@@ -1744,21 +1783,25 @@ pub(crate) async fn admin_ops_create_volume(Query(q): Query<CreateVolQuery>) -> 
     }
 }
 
+/// 设置复制策略请求
 #[derive(Deserialize)]
+/// 设置复制策略请求
 pub struct SetReplicationReq {
-    pub replication: String,
+    pub replication: String, // 复制码
     #[serde(default)]
-    pub volume_ids: Vec<u32>,
+    pub volume_ids: Vec<u32>, // 目标卷列表；空则按 from 推断
     #[serde(default)]
-    pub from: Option<String>,
+    pub from: Option<String>, // 可选源节点
     #[serde(default = "admin_default_true")]
-    pub heal: bool,
+    pub heal: bool, // 是否随后 heal
 }
 
+// serde 默认 true
 fn admin_default_true() -> bool {
     true
 }
 
+/// Admin：设置卷复制策略
 pub(crate) async fn admin_ops_set_replication(
     State(st): State<AppState>,
     Json(body): Json<SetReplicationReq>,
@@ -1776,19 +1819,22 @@ pub(crate) async fn admin_ops_set_replication(
     .await
 }
 
+/// 批量扩容卷请求
 #[derive(Deserialize)]
 pub struct GrowVolReq {
     #[serde(default = "admin_default_grow")]
-    pub count: u32,
+    pub count: u32, // 扩容数量
     #[serde(default)]
-    pub collection: String,
-    pub replication: Option<String>,
+    pub collection: String, // collection
+    pub replication: Option<String>, // 复制码
 }
 
+// 默认扩容数量
 fn admin_default_grow() -> u32 {
     1
 }
 
+/// Admin：grow 空闲卷
 pub(crate) async fn admin_ops_grow_volumes(
     State(st): State<AppState>,
     Json(body): Json<GrowVolReq>,
@@ -1805,6 +1851,7 @@ pub(crate) async fn admin_ops_grow_volumes(
     .await
 }
 
+// 代理 GET 到 Clerk
 async fn proxy_clerk_get(st: &AppState, path: &str) -> Response {
     match st.server.blob.clerk_get(path).await {
         Ok(r) => {
@@ -1826,10 +1873,12 @@ async fn proxy_clerk_get(st: &AppState, path: &str) -> Response {
     }
 }
 
+// 代理空 POST 到 Clerk
 async fn proxy_clerk_post(st: &AppState, path: &str) -> Response {
     proxy_clerk_post_json(st, path, serde_json::json!({})).await
 }
 
+// 代理 JSON POST 到 Clerk
 async fn proxy_clerk_post_json(st: &AppState, path: &str, body: serde_json::Value) -> Response {
     match st.server.blob.clerk_post_json(path, &body).await {
         Ok(r) => {
@@ -1851,13 +1900,15 @@ async fn proxy_clerk_post_json(st: &AppState, path: &str, body: serde_json::Valu
     }
 }
 
+/// 删除卷查询参数
 #[derive(Deserialize)]
+/// 删除卷查询参数
 pub struct DeleteVolQuery {
-    pub volume_url: String,
-    pub id: u32,
+    pub volume_url: String, // Volume HTTP 基址
+    pub id: u32,            // 卷 ID
 }
 
-/// Delete a data volume on a specific data node (drop local .dat/.idx).
+/// 在指定数据节点删除数据卷（删除本地 .dat/.idx）
 pub(crate) async fn admin_ops_delete_volume(Query(q): Query<DeleteVolQuery>) -> Response {
     let url = format!(
         "{}/admin/drop_volume/{}",
@@ -1885,12 +1936,14 @@ pub(crate) async fn admin_ops_delete_volume(Query(q): Query<DeleteVolQuery>) -> 
     }
 }
 
+/// 设置卷 online/offline
 #[derive(Deserialize)]
 pub struct SetVolumeOnlineReq {
-    pub volume_id: u32,
-    pub online: bool,
+    pub volume_id: u32, // 卷 ID
+    pub online: bool, // 是否在线
 }
 
+/// Admin：设置卷在线状态
 pub(crate) async fn admin_ops_set_volume_online(
     State(st): State<AppState>,
     Json(body): Json<SetVolumeOnlineReq>,
@@ -1906,12 +1959,15 @@ pub(crate) async fn admin_ops_set_volume_online(
     .await
 }
 
+/// 设置节点 online/offline
 #[derive(Deserialize)]
+/// 设置节点 online/offline
 pub struct SetNodeOnlineReq {
-    pub node_id: String,
-    pub online: bool,
+    pub node_id: String, // 节点 id
+    pub online: bool,    // 是否在线
 }
 
+/// Admin：设置节点在线状态
 pub(crate) async fn admin_ops_set_node_online(
     State(st): State<AppState>,
     Json(body): Json<SetNodeOnlineReq>,
@@ -1927,6 +1983,7 @@ pub(crate) async fn admin_ops_set_node_online(
     .await
 }
 
+// 构造 K8s API 基址 + token + HTTP 客户端
 fn k8s_api_base() -> Option<(String, String, reqwest::Client)> {
     if !in_kubernetes() {
         return None;
@@ -1947,6 +2004,7 @@ fn k8s_api_base() -> Option<(String, String, reqwest::Client)> {
     Some((format!("https://{host}:{port}"), token, client))
 }
 
+/// Admin：列出 K8s 节点
 pub(crate) async fn admin_ops_k8s_nodes() -> Response {
     let Some((base, token, client)) = k8s_api_base() else {
         return Json(serde_json::json!({
@@ -2027,25 +2085,29 @@ pub(crate) async fn admin_ops_k8s_nodes() -> Response {
     Json(serde_json::json!({ "ok": true, "nodes": nodes })).into_response()
 }
 
+/// 增加数据节点请求
 #[derive(Deserialize)]
+/// 增加数据节点请求
 pub struct AddDataNodeReq {
-    pub kubernetes_node: String,
+    pub kubernetes_node: String, // 目标 K8s Node 名
 }
 
+/// 放置副本请求
 #[derive(Deserialize)]
 pub struct PlaceReplicasReq {
-    pub source_node_id: String,
-    pub target_node_id: String,
+    pub source_node_id: String, // 源数据节点
+    pub target_node_id: String, // 目标数据节点
     #[serde(default = "admin_default_true")]
-    pub heal: bool,
+    pub heal: bool, // 是否 heal 卷
 }
 
+/// 清除 replica_of 配对请求
 #[derive(Deserialize)]
 pub struct ClearReplicaOfReq {
-    pub node_id: String,
+    pub node_id: String, // 节点 id
 }
 
-/// Mark `target` as replica of `source` and optionally heal volumes onto target.
+/// 标记 target 为 source 的副本，并可选择 heal 卷到 target
 pub(crate) async fn admin_ops_place_replicas(
     State(st): State<AppState>,
     Json(body): Json<PlaceReplicasReq>,
@@ -2062,7 +2124,7 @@ pub(crate) async fn admin_ops_place_replicas(
     .await
 }
 
-/// Clear node-level replica_of pairing (does not delete volume copies).
+/// 清除节点级 replica_of 配对（不删除卷副本）
 pub(crate) async fn admin_ops_clear_replica_of(
     State(st): State<AppState>,
     Json(body): Json<ClearReplicaOfReq>,
@@ -2078,6 +2140,7 @@ pub(crate) async fn admin_ops_clear_replica_of(
     .await
 }
 
+// Patch Node unschedulable
 async fn k8s_patch_node_unschedulable(
     client: &reqwest::Client,
     base: &str,
@@ -2105,6 +2168,7 @@ async fn k8s_patch_node_unschedulable(
     }
 }
 
+// 缩放 StatefulSet replicas
 async fn k8s_scale_sts(
     client: &reqwest::Client,
     base: &str,
@@ -2134,6 +2198,7 @@ async fn k8s_scale_sts(
     }
 }
 
+// 读取 StatefulSet 当前 replicas
 async fn k8s_sts_replicas(
     client: &reqwest::Client,
     base: &str,
@@ -2157,6 +2222,7 @@ async fn k8s_sts_replicas(
         .unwrap_or(0) as u32)
 }
 
+// 查询 Pod 所在 Node
 async fn k8s_pod_node(
     client: &reqwest::Client,
     base: &str,
@@ -2180,7 +2246,7 @@ async fn k8s_pod_node(
         .map(|s| s.to_string())
 }
 
-/// Add one volume data-node (capacity only). Replica pairing is done via place-replicas on a node.
+/// 增加一个 volume 数据节点（仅扩容）；副本配对走 place-replicas
 pub(crate) async fn admin_ops_add_data_node(Json(req): Json<AddDataNodeReq>) -> Response {
     let target = req.kubernetes_node.trim().to_string();
     if target.is_empty() {
@@ -2296,12 +2362,15 @@ pub(crate) async fn admin_ops_add_data_node(Json(req): Json<AddDataNodeReq>) -> 
     }
 }
 
+/// 删除数据节点请求
 #[derive(Deserialize)]
+/// 删除数据节点请求
 pub struct DeleteDataNodeReq {
-    /// When set, must be the current highest ordinal pod name (STS shrinks from the end).
+    /// 若指定，必须是当前最大 ordinal 的 Pod 名（STS 从尾部缩容）
     pub pod: Option<String>,
 }
 
+/// Admin：缩容/删除数据节点
 pub(crate) async fn admin_ops_delete_data_node(
     State(st): State<AppState>,
     Json(req): Json<DeleteDataNodeReq>,
@@ -2399,10 +2468,12 @@ pub(crate) async fn admin_ops_delete_data_node(
     }
 }
 
+// 拓扑布局 KV 命名空间
 const TOPO_LAYOUT_NS: &str = "admin";
+// 拓扑布局 KV 键
 const TOPO_LAYOUT_KEY: &str = "topo_layout_v2";
 
-/// GET saved Admin topology node positions (shared cluster-wide via Filer KV).
+/// GET 已保存的拓扑节点坐标（集群共享，存 Filer KV）
 pub(crate) async fn admin_topo_layout_get(State(st): State<AppState>) -> Response {
     match st.server.store.kv_get(TOPO_LAYOUT_NS, TOPO_LAYOUT_KEY).await {
         Ok(Some(bytes)) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
@@ -2422,7 +2493,7 @@ pub(crate) async fn admin_topo_layout_get(State(st): State<AppState>) -> Respons
     }
 }
 
-/// PUT manual topology layout. Body: `{ "positions": { "node-id": { "x": 1, "y": 2 }, ... } }`.
+/// PUT 手动拓扑布局。Body: `{ "positions": { "node-id": { "x": 1, "y": 2 }, ... } }`
 pub(crate) async fn admin_topo_layout_put(
     State(st): State<AppState>,
     Json(body): Json<serde_json::Value>,
@@ -2467,7 +2538,7 @@ pub(crate) async fn admin_topo_layout_put(
     }
 }
 
-/// DELETE clears the shared topology layout (Admin 「复位布局」).
+/// DELETE 清除共享拓扑布局（Admin「复位布局」）
 pub(crate) async fn admin_topo_layout_delete(State(st): State<AppState>) -> Response {
     let empty = serde_json::json!({ "positions": {} });
     let bytes = serde_json::to_vec(&empty).unwrap_or_else(|_| b"{\"positions\":{}}".to_vec());

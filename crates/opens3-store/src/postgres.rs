@@ -1,6 +1,6 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
-//! Shared Postgres-backed FilerStore for multi-instance Filer/S3.
+//! 共享 Postgres 后端 FilerStore，供多实例 Filer/S3 使用。
 
 use crate::FilerStore;
 use async_trait::async_trait;
@@ -10,12 +10,14 @@ use opens3_common::{Error, Result};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 
+/// 基于 Postgres 的 FilerStore。
 #[derive(Clone)]
 pub struct PostgresStore {
-    pool: PgPool,
+    pool: PgPool, // 连接池
 }
 
 impl PostgresStore {
+    /// 连接并执行建表 / 索引迁移。
     pub async fn connect(database_url: &str) -> Result<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(16)
@@ -27,8 +29,9 @@ impl PostgresStore {
         Ok(store)
     }
 
+    /// 幂等建表；`text_pattern_ops` 索引加速 path LIKE 前缀查询。
     async fn migrate(&self) -> Result<()> {
-        // sqlx Postgres rejects multi-statement batches in a single prepared query.
+        // sqlx Postgres 拒绝单条 prepared query 多语句，故逐条执行
         for stmt in [
             r#"
             CREATE TABLE IF NOT EXISTS opens3_entries (
@@ -58,6 +61,7 @@ impl PostgresStore {
     }
 }
 
+/// 规范路径：绝对、去尾斜杠、折叠 `//`；空 → `/`。
 fn normalize(path: &str) -> String {
     if path.is_empty() {
         return "/".into();
@@ -78,7 +82,7 @@ fn normalize(path: &str) -> String {
 impl FilerStore for PostgresStore {
     async fn insert_entry(&self, path: &str, entry: &EntryMeta) -> Result<()> {
         let path = normalize(path);
-        // ensure parents
+        // 自下而上 ON CONFLICT DO NOTHING 补齐父目录
         let mut parent = parent_path(&path).to_string();
         while parent != "/" {
             let dir = EntryMeta::directory(base_name(&parent));
@@ -114,6 +118,7 @@ impl FilerStore for PostgresStore {
         .execute(&self.pool)
         .await
         .map_err(|e| Error::Internal(e.to_string()))?;
+        // 冲突未插入 → AlreadyExists
         if res.rows_affected() == 0 {
             return Err(Error::AlreadyExists(path));
         }
@@ -165,6 +170,7 @@ impl FilerStore for PostgresStore {
 
     async fn list_directory(&self, dir: &str) -> Result<Vec<EntryMeta>> {
         let dir = normalize(dir);
+        // LIKE 粗筛；parent_path 再滤直接子项
         let rows = sqlx::query("SELECT path, meta FROM opens3_entries WHERE path LIKE $1 || '/%'")
             .bind(&dir)
             .fetch_all(&self.pool)
@@ -179,7 +185,7 @@ impl FilerStore for PostgresStore {
             let v: serde_json::Value = r.get("meta");
             let mut e: EntryMeta =
                 serde_json::from_value(v).map_err(|e| Error::Internal(e.to_string()))?;
-            // Always derive display name from path (legacy parents stored full path as name).
+            // 展示名一律从路径推导（旧数据可能把全路径写进 name）
             e.name = base_name(&p).to_string();
             out.push(e);
         }

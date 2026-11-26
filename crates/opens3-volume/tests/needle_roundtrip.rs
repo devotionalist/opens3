@@ -1,8 +1,11 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
+//! 写读删与一次性 compact 往返测试。
+
 use opens3_volume::store::VolumeStore;
 use tempfile::tempdir;
 
+/// 写入 → 读取 → 软删 → compact 后存活数据仍可读
 #[test]
 fn write_read_delete_compact() {
     let dir = tempdir().unwrap();

@@ -1,9 +1,12 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
+//! EC 编码 / 缺片重建往返测试。
+
 use opens3_volume::ec::EcEncoder;
 use std::fs;
 use tempfile::tempdir;
 
+/// 2+1 编码后丢掉一个 data 分片仍可重建
 #[test]
 fn encode_and_reconstruct() {
     let dir = tempdir().unwrap();

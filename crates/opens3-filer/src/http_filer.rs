@@ -1,6 +1,6 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
-//! Filer path HTTP / WebDAV / store routes.
+//! Filer 路径 HTTP / WebDAV / 元数据 store 路由。
 
 use crate::server::AppState;
 use axum::body::Bytes;
@@ -14,7 +14,7 @@ use opens3_common::util::join_path;
 use serde::Deserialize;
 use std::time::Instant;
 
-/// Filer HTTP / WebDAV / store routes (no `/health` — owned by [`Gateway::serve`]).
+/// Filer HTTP / WebDAV / store 路由（`/health` 由 [`Gateway::serve`] 提供）
 pub fn http_router() -> Router<AppState> {
     Router::new()
         .route("/status", get(status))
@@ -43,6 +43,7 @@ pub fn http_router() -> Router<AppState> {
         .route("/dav", any(webdav_root))
 }
 
+/// 规范化路径：保证以 `/` 开头、去掉尾部 `/`
 fn normalize_path(path: &str) -> String {
     let p = if path.is_empty() || path == "/" {
         "/".to_string()
@@ -58,6 +59,7 @@ fn normalize_path(path: &str) -> String {
     }
 }
 
+/// `/status`：Clerk URL、端口、是否启用加密
 async fn status(State(st): State<AppState>) -> impl IntoResponse {
     Json(serde_json::json!({
         "clerk": st.server.blob.clerk_url(),
@@ -67,20 +69,24 @@ async fn status(State(st): State<AppState>) -> impl IntoResponse {
 }
 
 #[derive(Deserialize)]
+/// 注册 webhook 请求体
 struct WebhookBody {
-    url: String,
+    url: String, // 回调 URL
 }
 
+/// `POST /webhooks`：注册事件 webhook
 async fn add_webhook(State(st): State<AppState>, Json(body): Json<WebhookBody>) -> impl IntoResponse {
     st.server.events.add_webhook(body.url);
     Json(serde_json::json!({"ok": true}))
 }
 
 #[derive(Deserialize)]
+/// PUT entry 查询参数
 struct PutQuery {
-    ttl: Option<u64>,
+    ttl: Option<u64>, // 对象 TTL（秒），缺省 0
 }
 
+/// `PUT /entries{*path}`：写入对象内容
 async fn put_entry(
     State(st): State<AppState>,
     Path(path): Path<String>,
@@ -100,6 +106,7 @@ async fn put_entry(
     out
 }
 
+/// `GET /entries{*path}`：读取对象（带 ETag / Content-Type）
 async fn get_entry(State(st): State<AppState>, Path(path): Path<String>) -> impl IntoResponse {
     st.server.filer_metrics.in_flight.inc();
     let out = match st.server.get_bytes(&path).await {
@@ -126,6 +133,7 @@ async fn get_entry(State(st): State<AppState>, Path(path): Path<String>) -> impl
     out
 }
 
+/// `DELETE /entries{*path}`：删除对象
 async fn delete_entry(State(st): State<AppState>, Path(path): Path<String>) -> impl IntoResponse {
     st.server.filer_metrics.in_flight.inc();
     let out = match st.server.delete_path(&path).await {
@@ -140,6 +148,7 @@ async fn delete_entry(State(st): State<AppState>, Path(path): Path<String>) -> i
     out
 }
 
+/// `GET /list{*path}`：列目录
 async fn list_dir(State(st): State<AppState>, Path(path): Path<String>) -> impl IntoResponse {
     let t0 = Instant::now();
     let path = normalize_path(&path);
@@ -172,11 +181,13 @@ async fn list_dir(State(st): State<AppState>, Path(path): Path<String>) -> impl 
 }
 
 #[derive(Deserialize)]
+/// 跨 Filer 复制任务请求
 struct ReplicateBody {
-    prefix: String,
-    target_filer: String,
+    prefix: String,       // 源路径前缀
+    target_filer: String, // 目标 Filer 基址
 }
 
+/// `POST /admin/replicate`：异步复制前缀下对象到目标 Filer
 async fn replicate_dir(State(st): State<AppState>, Json(body): Json<ReplicateBody>) -> impl IntoResponse {
     let job_id = uuid::Uuid::new_v4().to_string();
     let job = serde_json::json!({
@@ -198,6 +209,7 @@ async fn replicate_dir(State(st): State<AppState>, Json(body): Json<ReplicateBod
     let prefix = body.prefix.clone();
     let target = body.target_filer.clone();
     let jid = job_id.clone();
+    // 后台任务：枚举前缀、最多重试 3 次 PUT 到目标
     tokio::spawn(async move {
         let mut ok = 0usize;
         let mut fail = 0usize;
@@ -259,6 +271,7 @@ async fn replicate_dir(State(st): State<AppState>, Json(body): Json<ReplicateBod
     Json(serde_json::json!({"job_id": job_id, "status": "running"})).into_response()
 }
 
+/// `GET /admin/replicate/status/{job_id}`：查询复制任务状态
 async fn replicate_status(
     State(st): State<AppState>,
     Path(job_id): Path<String>,
@@ -275,6 +288,7 @@ async fn replicate_status(
     }
 }
 
+/// WebDAV 根路径 `/dav`
 async fn webdav_root(
     State(st): State<AppState>,
     method: axum::http::Method,
@@ -284,6 +298,7 @@ async fn webdav_root(
     webdav_inner(&st, "/", method, &headers, body).await
 }
 
+/// WebDAV 子路径 `/dav/{*path}`
 async fn webdav(
     State(st): State<AppState>,
     Path(path): Path<String>,
@@ -299,6 +314,7 @@ async fn webdav(
     webdav_inner(&st, &path, method, &headers, body).await
 }
 
+/// 从 Destination 头解析目标路径（支持绝对 URL 或 /dav 前缀）
 fn webdav_dest_path(headers: &axum::http::HeaderMap) -> Option<String> {
     let raw = headers.get("destination")?.to_str().ok()?;
     // Absolute URL (`http://host/dav/path`) or path; strip optional /dav prefix.
@@ -314,6 +330,7 @@ fn webdav_dest_path(headers: &axum::http::HeaderMap) -> Option<String> {
     Some(normalize_path(path))
 }
 
+/// 构造 PROPFIND 单条 response XML 片段
 fn webdav_prop_response(
     href: &str,
     is_dir: bool,
@@ -336,6 +353,7 @@ fn webdav_prop_response(
     )
 }
 
+/// WebDAV 方法分发：OPTIONS/HEAD/GET/PUT/DELETE/MKCOL/PROPFIND/COPY/MOVE
 async fn webdav_inner(
     st: &AppState,
     path: &str,
@@ -346,6 +364,7 @@ async fn webdav_inner(
     let path = normalize_path(path);
     let allow = "OPTIONS, HEAD, GET, PUT, DELETE, MKCOL, PROPFIND, COPY, MOVE";
     match method.as_str() {
+        // 声明支持的方法与 DAV 级别
         "OPTIONS" => (
             StatusCode::OK,
             [
@@ -388,6 +407,7 @@ async fn webdav_inner(
             Ok(()) => StatusCode::NO_CONTENT.into_response(),
             Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         },
+        // 创建集合（目录）；已存在返回 405
         "MKCOL" => {
             let entry = EntryMeta::directory(opens3_common::util::base_name(&path));
             match st.server.store.insert_entry(&path, &entry).await {
@@ -398,6 +418,7 @@ async fn webdav_inner(
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
             }
         }
+        // Depth=0 仅自身；否则含直接子项
         "PROPFIND" => {
             let depth = headers
                 .get("depth")
@@ -454,6 +475,7 @@ async fn webdav_inner(
             )
                 .into_response()
         }
+        // 文件级 COPY/MOVE（目录未实现）；尊重 Overwrite 头
         "COPY" | "MOVE" => {
             let Some(dest) = webdav_dest_path(headers) else {
                 return (StatusCode::BAD_REQUEST, "Destination required").into_response();
@@ -505,15 +527,18 @@ async fn webdav_inner(
 }
 
 #[derive(Deserialize)]
+/// store PUT 模式：insert / update
 struct StorePutQuery {
-    mode: Option<String>,
+    mode: Option<String>, // insert | update（默认 update）
 }
 
 #[derive(Deserialize)]
+/// 仅写元数据的请求体
 struct StoreEntryBody {
-    entry: EntryMeta,
+    entry: EntryMeta, // EntryMeta JSON
 }
 
+/// `PUT /store/entry{*path}`：插入或更新元数据（不写 blob）
 async fn store_put_entry(
     State(st): State<AppState>,
     Path(path): Path<String>,
@@ -538,6 +563,7 @@ async fn store_put_entry(
     }
 }
 
+/// `GET /store/entry{*path}`：读取元数据
 async fn store_get_entry(State(st): State<AppState>, Path(path): Path<String>) -> impl IntoResponse {
     let path = normalize_path(&path);
     match st.server.store.find_entry(&path).await {
@@ -547,6 +573,7 @@ async fn store_get_entry(State(st): State<AppState>, Path(path): Path<String>) -
     }
 }
 
+/// `DELETE /store/entry{*path}`：删除元数据条目
 async fn store_delete_entry(
     State(st): State<AppState>,
     Path(path): Path<String>,
@@ -559,6 +586,7 @@ async fn store_delete_entry(
     }
 }
 
+/// `GET /store/list{*path}`：列目录元数据
 async fn store_list_dir(State(st): State<AppState>, Path(path): Path<String>) -> impl IntoResponse {
     let path = normalize_path(&path);
     match st.server.store.list_directory(&path).await {
@@ -568,11 +596,13 @@ async fn store_list_dir(State(st): State<AppState>, Path(path): Path<String>) ->
 }
 
 #[derive(Deserialize)]
+/// 前缀列举查询参数
 struct PrefixQuery {
-    prefix: Option<String>,
-    limit: Option<usize>,
+    prefix: Option<String>, // 路径前缀，默认 `/`
+    limit: Option<usize>,   // 最大条数，默认 1000
 }
 
+/// `GET /store/prefix`：按前缀列举
 async fn store_list_prefix(
     State(st): State<AppState>,
     Query(q): Query<PrefixQuery>,
@@ -591,6 +621,7 @@ async fn store_list_prefix(
     }
 }
 
+/// `PUT /store/kv/{ns}/{key}`：写入 KV
 async fn store_kv_put(
     State(st): State<AppState>,
     Path((ns, key)): Path<(String, String)>,
@@ -602,6 +633,7 @@ async fn store_kv_put(
     }
 }
 
+/// `GET /store/kv/{ns}/{key}`：读取 KV
 async fn store_kv_get(
     State(st): State<AppState>,
     Path((ns, key)): Path<(String, String)>,
@@ -613,6 +645,7 @@ async fn store_kv_get(
     }
 }
 
+/// `DELETE /store/kv/{ns}/{key}`：删除 KV
 async fn store_kv_delete(
     State(st): State<AppState>,
     Path((ns, key)): Path<(String, String)>,
@@ -622,10 +655,12 @@ async fn store_kv_delete(
 }
 
 #[derive(Deserialize)]
+/// KV 列举查询
 struct KvListQuery {
-    prefix: Option<String>,
+    prefix: Option<String>, // key 前缀
 }
 
+/// `GET /store/kv/{ns}`：列举 KV（value 以 base64 返回）
 async fn store_kv_list(
     State(st): State<AppState>,
     Path(ns): Path<String>,

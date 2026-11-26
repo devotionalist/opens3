@@ -1,21 +1,23 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
-//! Object Lock configuration + per-object retention enforcement.
+//! Object Lock 配置与按对象保留期强制执行。
 
 use chrono::{DateTime, Duration, Utc};
 use opens3_common::types::EntryMeta;
 use opens3_common::{Error, Result};
 use serde::{Deserialize, Serialize};
 
+/// 桶级 Object Lock 默认配置
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ObjectLockConfig {
-    pub enabled: bool,
-    pub mode: Option<String>, // GOVERNANCE | COMPLIANCE
-    pub days: Option<i64>,
-    pub years: Option<i64>,
+    pub enabled: bool,          // 是否启用 Object Lock
+    pub mode: Option<String>,   // GOVERNANCE | COMPLIANCE
+    pub days: Option<i64>,      // 默认保留天数
+    pub years: Option<i64>,     // 默认保留年数（优先 days）
 }
 
 impl ObjectLockConfig {
+    /// 从 ObjectLockConfiguration XML 粗解析
     pub fn from_xml(body: &str) -> Self {
         let enabled = body.contains("Enabled") || body.contains("<ObjectLockEnabled>Enabled");
         let mode = if body.contains("COMPLIANCE") {
@@ -35,6 +37,7 @@ impl ObjectLockConfig {
         }
     }
 
+    /// 序列化为 ObjectLockConfiguration XML
     pub fn to_xml(&self) -> String {
         if !self.enabled {
             return r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -64,18 +67,20 @@ impl ObjectLockConfig {
         )
     }
 
+    /// 按 days / years 计算默认 retain-until；都无则 None
     pub fn default_retain_until(&self) -> Option<DateTime<Utc>> {
         let now = Utc::now();
         if let Some(d) = self.days {
             return Some(now + Duration::days(d));
         }
         if let Some(y) = self.years {
-            return Some(now + Duration::days(y * 365));
+            return Some(now + Duration::days(y * 365)); // 简化：按 365 天/年
         }
         None
     }
 }
 
+/// 从 XML 提取整型标签内容
 fn extract_int(body: &str, tag: &str) -> Option<i64> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
@@ -84,6 +89,7 @@ fn extract_int(body: &str, tag: &str) -> Option<i64> {
     body[s..e].trim().parse().ok()
 }
 
+/// 将桶默认保留写入 entry 的 user_metadata
 pub fn apply_default_retention(entry: &mut EntryMeta, cfg: &ObjectLockConfig) {
     if !cfg.enabled {
         return;
@@ -101,6 +107,7 @@ pub fn apply_default_retention(entry: &mut EntryMeta, cfg: &ObjectLockConfig) {
     }
 }
 
+/// 将请求头中的 Object Lock 字段写入 entry metadata
 pub fn apply_request_lock_headers(
     entry: &mut EntryMeta,
     headers: &std::collections::HashMap<String, String>,
@@ -123,11 +130,12 @@ pub fn apply_request_lock_headers(
     }
 }
 
-/// Returns Err(ObjectLocked) if delete/overwrite is not allowed.
+/// 删除/覆盖前检查：legal hold、COMPLIANCE/GOVERNANCE 保留期；返回 Err(ObjectLocked) 表示禁止
 pub fn enforce_delete(
     entry: &EntryMeta,
     bypass_governance: bool,
 ) -> Result<()> {
+    // 法律保留开启时一律禁止
     if entry
         .user_metadata
         .get("x-amz-object-lock-legal-hold")
@@ -149,10 +157,10 @@ pub fn enforce_delete(
         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .map(|d| d.with_timezone(&Utc));
     let Some(until) = until else {
-        return Ok(());
+        return Ok(()); // 无保留期则放行
     };
     if Utc::now() >= until {
-        return Ok(());
+        return Ok(()); // 已过期
     }
     if mode.eq_ignore_ascii_case("COMPLIANCE") {
         return Err(Error::ObjectLocked(format!(
@@ -160,6 +168,7 @@ pub fn enforce_delete(
             until.to_rfc3339()
         )));
     }
+    // GOVERNANCE 可用 bypass 头绕过
     if mode.eq_ignore_ascii_case("GOVERNANCE") && !bypass_governance {
         return Err(Error::ObjectLocked(format!(
             "governance retention until {} (set x-amz-bypass-governance-retention)",
@@ -175,6 +184,7 @@ mod tests {
     use opens3_common::types::EntryMeta;
 
     #[test]
+    /// COMPLIANCE 即使 bypass 也不可删
     fn compliance_blocks_delete() {
         let mut e = EntryMeta::file("k", 1, "f".into(), "e".into());
         e.user_metadata
@@ -187,6 +197,7 @@ mod tests {
     }
 
     #[test]
+    /// GOVERNANCE 可通过 bypass_governance 放行
     fn governance_bypass() {
         let mut e = EntryMeta::file("k", 1, "f".into(), "e".into());
         e.user_metadata
@@ -200,6 +211,7 @@ mod tests {
     }
 
     #[test]
+    /// 解析 ObjectLockConfiguration XML
     fn parse_lock_xml() {
         let cfg = ObjectLockConfig::from_xml(
             r#"<ObjectLockConfiguration><ObjectLockEnabled>Enabled</ObjectLockEnabled>

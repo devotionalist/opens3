@@ -1,8 +1,11 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
+//! vacuum 分阶段（check / compact / commit / cleanup）测试。
+
 use opens3_volume::store::VolumeStore;
 use tempfile::tempdir;
 
+/// 压缩期间阻止写入；commit 后临时文件清理且数据正确
 #[test]
 fn vacuum_check_compact_commit_cleanup() {
     let dir = tempdir().unwrap();
@@ -39,6 +42,7 @@ fn vacuum_check_compact_commit_cleanup() {
     assert_eq!(store.read(1, 4, 4).unwrap(), b"after");
 }
 
+/// 崩溃后有 `.cpc` 标记时，reopen 应向前完成 commit
 #[test]
 fn vacuum_reconcile_completes_cpc_commit() {
     let dir = tempdir().unwrap();

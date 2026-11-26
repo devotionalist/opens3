@@ -1,0 +1,69 @@
+---
+description: Require annotation comments on all Rust code
+globs: "**/*.rs"
+alwaysApply: false
+---
+
+# Rust 标注注释
+
+编辑或新增任何 Rust 代码时，必须为代码写清标注注释；不要留下无说明的公共 API、类型字段或非平凡逻辑。
+
+## 必须注释
+
+- **模块 / 文件**：文件顶部或 `mod` 说明职责（已有 copyright 头时可紧随其后）
+- **类型**：`struct` / `enum` / `trait` / 重要 `type` 别名
+- **字段与变体**：每个字段、enum 变体一行简短说明
+- **函数 / 方法**：用途、关键参数、返回值或错误语义（非 getter 式显然含义也要标）
+- **常量 / 静态量**：含义与单位（若有）
+- **非平凡逻辑**：分支条件、锁策略、协议/磁盘格式、不变量、workaround
+
+## 风格
+
+- 优先与本仓库现有风格一致：简短中文标注（可夹英文专有名词，如 Raft、Needle、FileId）
+- 注释说明「为什么 / 是什么」，不要复述代码字面意思
+- 不要为纯机械改动批量灌水；但**新写或改到的符号**必须带标注
+- 文档注释 `///` 用于对外可见 API；实现细节用 `//`
+
+## 示例
+
+```rust
+// ❌ BAD — 无标注
+pub struct NeedleIndex {
+    pub offset: u64,
+    pub size: u32,
+    pub deleted: bool,
+}
+
+pub fn vacuum_check(&self) -> f64 {
+    let live = self.file_count;
+    let dead = self.deleted_count;
+    dead as f64 / live.saturating_add(dead) as f64
+}
+
+// ✅ GOOD — 类型、字段、函数均有标注
+/// 单条 needle 在 .idx / 内存中的定位信息
+pub struct NeedleIndex {
+    pub offset: u64,   // 在 .dat 中的起始偏移
+    pub size: u32,     // body 长度（含 file_key）
+    pub deleted: bool, // 软删标记；空间靠 vacuum 回收
+}
+
+/// 垃圾比例：deleted / (live + deleted)；按 key 计数，非字节占用
+pub fn vacuum_check(&self) -> f64 {
+    let live = self.file_count;   // 存活 file_key 数
+    let dead = self.deleted_count; // 软删 file_key 数
+    // 空卷视为无垃圾，避免除零
+    let total = live.saturating_add(dead);
+    if total == 0 {
+        0.0
+    } else {
+        dead as f64 / total as f64
+    }
+}
+```
+
+## 检查清单
+
+- [ ] 新增/修改的 pub 项有 `///` 或紧邻 `//`
+- [ ] struct/enum 字段均有行尾或上一行注释
+- [ ] 复杂控制流旁有意图说明

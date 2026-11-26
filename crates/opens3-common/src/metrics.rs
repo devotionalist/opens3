@@ -1,6 +1,6 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
-//! Shared Prometheus registry and metric helpers for OpenS3 components.
+//! 共享 Prometheus 注册表与各组件指标辅助。
 
 use prometheus::{
     Encoder, Gauge, HistogramOpts, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Opts,
@@ -10,19 +10,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// 全局默认 Registry（指标名前缀 `opens3`）
 pub static REGISTRY: LazyLock<Registry> =
     LazyLock::new(|| Registry::new_custom(Some("opens3".to_string()), None).expect("registry"));
 
+/// 进程级指标是否已注册（跨 register 调用幂等）
 static PROCESS_REGISTERED: AtomicBool = AtomicBool::new(false);
 
+/// 构造带名称与帮助文本的 Opts
 fn opts(name: &str, help: &str) -> Opts {
     Opts::new(name, help)
 }
 
-/// Process-level metrics shared by every component (idempotent).
+/// 注册进程级指标（幂等；各组件 register 时先调用）
 pub fn ensure_process_metrics(reg: &Registry) {
     if PROCESS_REGISTERED.swap(true, Ordering::SeqCst) {
-        return;
+        return; // 已注册则跳过
     }
     let version = env!("CARGO_PKG_VERSION");
     let info = IntGaugeVec::new(
@@ -33,7 +36,7 @@ pub fn ensure_process_metrics(reg: &Registry) {
         &["version", "component"],
     )
     .expect("build_info");
-    // Component label filled by callers via set_component_info; seed a base series.
+    // 组件 label 由调用方补充；先种一条基础序列
     info.with_label_values(&[version, "opens3"]).set(1);
     let _ = reg.register(Box::new(info));
 
@@ -50,29 +53,30 @@ pub fn ensure_process_metrics(reg: &Registry) {
     let _ = reg.register(Box::new(start_gauge));
 }
 
-/// Master-side gauges / counters
+/// Clerk（master）侧 gauges / counters
 pub struct ClerkMetrics {
-    pub is_leader: IntGauge,
-    pub term: IntGauge,
-    pub commit_index: IntGauge,
-    pub volume_servers: IntGauge,
-    pub volumes: IntGauge,
-    pub total_size_bytes: IntGauge,
-    pub total_files: IntGauge,
-    pub under_replicated_volumes: IntGauge,
-    pub assign_total: IntCounterVec,
-    pub lookup_total: IntCounterVec,
-    pub heartbeat_total: IntCounterVec,
-    pub heal_tasks: IntGauge,
-    pub heal_runs_total: IntCounterVec,
-    pub vacuum_tasks: IntGauge,
-    pub vacuum_runs_total: IntCounterVec,
-    pub balance_moves: IntGauge,
-    pub balance_runs_total: IntCounterVec,
-    pub request_duration: HistogramVec,
+    pub is_leader: IntGauge,                 // 本节点是否 Raft leader（1/0）
+    pub term: IntGauge,                      // 当前 Raft term
+    pub commit_index: IntGauge,              // Raft commit index
+    pub volume_servers: IntGauge,            // 已登记 volume server 数
+    pub volumes: IntGauge,                   // 已知卷数
+    pub total_size_bytes: IntGauge,          // 各卷 size 之和
+    pub total_files: IntGauge,               // 各卷 file_count 之和
+    pub under_replicated_volumes: IntGauge,  // 副本不足的卷数
+    pub assign_total: IntCounterVec,         // assign 请求计数（按 result）
+    pub lookup_total: IntCounterVec,         // volume lookup 计数
+    pub heartbeat_total: IntCounterVec,      // 收到的心跳计数
+    pub heal_tasks: IntGauge,                // 最近一次 heal 任务数
+    pub heal_runs_total: IntCounterVec,      // heal planner 执行次数
+    pub vacuum_tasks: IntGauge,              // 最近一次 vacuum 任务数
+    pub vacuum_runs_total: IntCounterVec,    // vacuum planner 执行次数
+    pub balance_moves: IntGauge,             // 最近一次 balance 迁移数
+    pub balance_runs_total: IntCounterVec,   // balance planner 执行次数
+    pub request_duration: HistogramVec,      // Clerk HTTP 延迟（按 op）
 }
 
 impl ClerkMetrics {
+    /// 向 Registry 注册全部 Clerk 指标并返回共享句柄
     pub fn register(reg: &Registry) -> anyhow::Result<Arc<Self>> {
         ensure_process_metrics(reg);
         let m = Self {
@@ -138,6 +142,7 @@ impl ClerkMetrics {
                 &["op"],
             )?,
         };
+        // 逐个注册；任一项失败则整体返回错误
         for c in [
             Box::new(m.is_leader.clone()) as Box<dyn prometheus::core::Collector>,
             Box::new(m.term.clone()),
@@ -164,27 +169,28 @@ impl ClerkMetrics {
     }
 }
 
-/// Volume-side metrics
+/// Volume 节点侧指标
 pub struct VolumeMetrics {
-    pub volume_count: IntGauge,
-    pub max_volumes: IntGauge,
-    pub free_disk_bytes: IntGauge,
-    pub total_size_bytes: IntGauge,
-    pub total_files: IntGauge,
-    pub deleted_files: IntGauge,
-    pub needle_ops: IntCounterVec,
-    pub needle_bytes: IntCounterVec,
-    pub replicate_total: IntCounterVec,
-    pub compact_total: IntCounterVec,
-    pub vacuum_total: IntCounterVec,
-    pub ec_total: IntCounterVec,
-    pub heartbeat_fail: IntGauge,
-    pub request_duration: HistogramVec,
-    pub detail_size: IntGaugeVec,
-    pub detail_files: IntGaugeVec,
+    pub volume_count: IntGauge,          // 本机卷数量
+    pub max_volumes: IntGauge,           // 配置的本机卷上限
+    pub free_disk_bytes: IntGauge,       // 数据目录剩余磁盘
+    pub total_size_bytes: IntGauge,      // 本机数据总大小
+    pub total_files: IntGauge,           // 存活 needle 数
+    pub deleted_files: IntGauge,         // 软删 needle 数
+    pub needle_ops: IntCounterVec,       // Needle 操作计数（op, result）
+    pub needle_bytes: IntCounterVec,     // Needle payload 字节（按 op）
+    pub replicate_total: IntCounterVec,  // 卷/needle 复制次数
+    pub compact_total: IntCounterVec,    // compact 运行次数
+    pub vacuum_total: IntCounterVec,     // vacuum 各 phase 运行次数
+    pub ec_total: IntCounterVec,         // EC 编码运行次数
+    pub heartbeat_fail: IntGauge,        // 最近心跳是否失败（1/0）
+    pub request_duration: HistogramVec,  // HTTP handler 延迟
+    pub detail_size: IntGaugeVec,        // 按 volume_id/state 的大小
+    pub detail_files: IntGaugeVec,       // 按 volume_id/state 的存活文件数
 }
 
 impl VolumeMetrics {
+    /// 向 Registry 注册全部 Volume 指标并返回共享句柄
     pub fn register(reg: &Registry) -> anyhow::Result<Arc<Self>> {
         ensure_process_metrics(reg);
         let m = Self {
@@ -265,18 +271,19 @@ impl VolumeMetrics {
     }
 }
 
-/// S3 gateway metrics
+/// S3 网关指标
 pub struct S3Metrics {
-    pub requests: IntCounterVec,
-    pub request_bytes: IntCounterVec,
-    pub in_flight: IntGauge,
-    pub errors: IntCounterVec,
-    pub multipart_uploads: IntGauge,
-    pub request_duration: HistogramVec,
-    pub auth_fail: IntCounterVec,
+    pub requests: IntCounterVec,         // S3 API 请求（method/action/status）
+    pub request_bytes: IntCounterVec,    // 请求/响应 body 字节（按 direction）
+    pub in_flight: IntGauge,             // 进行中的 S3 请求数
+    pub errors: IntCounterVec,           // 按 S3 错误码计数
+    pub multipart_uploads: IntGauge,     // 活跃 multipart 上传数
+    pub request_duration: HistogramVec,  // handler 延迟（按 action）
+    pub auth_fail: IntCounterVec,        // 认证失败（按 reason）
 }
 
 impl S3Metrics {
+    /// 向 Registry 注册全部 S3 指标并返回共享句柄
     pub fn register(reg: &Registry) -> anyhow::Result<Arc<Self>> {
         ensure_process_metrics(reg);
         let m = Self {
@@ -320,15 +327,16 @@ impl S3Metrics {
     }
 }
 
-/// Filer HTTP API metrics
+/// Filer HTTP API 指标
 pub struct FilerMetrics {
-    pub ops: IntCounterVec,
-    pub bytes: IntCounterVec,
-    pub request_duration: HistogramVec,
-    pub in_flight: IntGauge,
+    pub ops: IntCounterVec,              // 条目操作计数（op, result）
+    pub bytes: IntCounterVec,            // payload 字节（按 direction）
+    pub request_duration: HistogramVec,  // handler 延迟（按 op）
+    pub in_flight: IntGauge,             // 进行中的 filer 请求数
 }
 
 impl FilerMetrics {
+    /// 向 Registry 注册全部 Filer 指标并返回共享句柄
     pub fn register(reg: &Registry) -> anyhow::Result<Arc<Self>> {
         ensure_process_metrics(reg);
         let m = Self {
@@ -364,12 +372,13 @@ impl FilerMetrics {
     }
 }
 
+/// 将 Registry 编码为 Prometheus text exposition 格式
 pub fn encode_metrics(reg: &Registry) -> String {
     let families = reg.gather();
     let encoder = TextEncoder::new();
     let mut buf = Vec::new();
     if encoder.encode(&families, &mut buf).is_err() {
-        return String::new();
+        return String::new(); // 编码失败时返回空串，避免打挂 scrape
     }
     String::from_utf8_lossy(&buf).into_owned()
 }

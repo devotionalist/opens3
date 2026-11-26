@@ -1,5 +1,7 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
+//! 本地 redb 嵌入式 FilerStore；单机默认元数据后端。
+
 use crate::FilerStore;
 use async_trait::async_trait;
 use opens3_common::types::EntryMeta;
@@ -9,15 +11,17 @@ use redb::{Database, ReadableTable, TableDefinition};
 use std::path::Path;
 use std::sync::Arc;
 
-const ENTRIES: TableDefinition<&str, &[u8]> = TableDefinition::new("entries");
-const KV: TableDefinition<&str, &[u8]> = TableDefinition::new("kv");
+const ENTRIES: TableDefinition<&str, &[u8]> = TableDefinition::new("entries"); // path → JSON
+const KV: TableDefinition<&str, &[u8]> = TableDefinition::new("kv");             // ns/key → bytes
 
+/// 基于 redb 的本地元数据存储；阻塞 IO 经 `spawn_blocking` 卸载。
 #[derive(Clone)]
 pub struct RedbStore {
-    db: Arc<Database>,
+    db: Arc<Database>, // 多任务共享同一库
 }
 
 impl RedbStore {
+    /// 打开（或创建）数据库文件；自动建父目录与表。
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         if let Some(parent) = path.as_ref().parent() {
             std::fs::create_dir_all(parent)?;
@@ -29,6 +33,7 @@ impl RedbStore {
         Ok(store)
     }
 
+    /// 确保 `entries` / `kv` 表存在。
     fn init(&self) -> Result<()> {
         let txn = self
             .db
@@ -42,6 +47,7 @@ impl RedbStore {
         Ok(())
     }
 
+    /// 规范为以 `/` 开头、无尾斜杠的绝对路径。
     fn normalize(path: &str) -> String {
         let p = if path.is_empty() || path == "/" {
             "/".to_string()
@@ -57,6 +63,7 @@ impl RedbStore {
         }
     }
 
+    /// KV 复合键：`{ns}/{key}`。
     fn kv_key(ns: &str, key: &str) -> String {
         format!("{ns}/{key}")
     }
@@ -81,7 +88,7 @@ impl FilerStore for RedbStore {
                 {
                     return Err(Error::AlreadyExists(path));
                 }
-                // ensure parents
+                // 沿父链向上补齐缺失目录（含根 `/`）
                 let mut parent = parent_path(&path).to_string();
                 loop {
                     if parent == "/" {
@@ -211,6 +218,7 @@ impl FilerStore for RedbStore {
                 if path == dir {
                     continue;
                 }
+                // 全表扫描后按 parent 过滤直接子项
                 if parent_path(&path) == dir {
                     let mut meta: EntryMeta = serde_json::from_slice(v.value())
                         .map_err(|e| Error::Internal(e.to_string()))?;
@@ -247,7 +255,7 @@ impl FilerStore for RedbStore {
                 }
                 let meta: EntryMeta = serde_json::from_slice(v.value())
                     .map_err(|e| Error::Internal(e.to_string()))?;
-                // Include directories so empty folders (UI / S3 prefix markers) are visible.
+                // 含目录，便于空文件夹 / S3 prefix marker 可见
                 if path == "/" {
                     continue;
                 }
@@ -338,6 +346,7 @@ impl FilerStore for RedbStore {
                 let (k, v) = item.map_err(|e| Error::Internal(e.to_string()))?;
                 let key = k.value();
                 if key.starts_with(&pfx) {
+                    // 返回时剥掉 `{ns}/` 前缀
                     let short = key
                         .strip_prefix(&format!("{ns_owned}/"))
                         .unwrap_or(key)

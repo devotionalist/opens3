@@ -1,6 +1,6 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
-//! Unified gateway server: Filer path API + S3 on one port.
+//! 统一网关：Filer 路径 API 与 S3 共用同一端口。
 
 use crate::auth::AuthStore;
 use crate::client::BlobClient;
@@ -20,47 +20,53 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::info;
 
+/// 启用的协议开关（Filer / S3）
 #[derive(Clone, Copy, Debug)]
 pub struct Protocols {
-    pub filer: bool,
-    pub s3: bool,
+    pub filer: bool, // 是否挂载 Filer/WebDAV 路由
+    pub s3: bool,    // 是否挂载 S3 兼容路由
 }
 
 impl Protocols {
+    /// 仅 Filer
     pub const FILER: Self = Self {
         filer: true,
         s3: false,
     };
+    /// Filer + S3
     pub const ALL: Self = Self {
         filer: true,
         s3: true,
     };
 }
 
+/// 网关服务核心状态：元数据存储、Blob 客户端、鉴权与策略等
 #[derive(Clone)]
 pub struct Server {
-    pub store: Arc<dyn FilerStore>,
-    pub blob: BlobClient,
-    pub events: EventBus,
-    pub port: u16,
-    pub encrypt_key: Option<[u8; 32]>,
-    pub collection: String,
-    pub filer_metrics: Arc<FilerMetrics>,
-    pub auth: Arc<parking_lot::RwLock<AuthStore>>,
-    pub policies: Arc<parking_lot::RwLock<PolicyStore>>,
-    pub lifecycles: Arc<parking_lot::RwLock<HashMap<String, LifecycleConfig>>>,
-    pub s3_metrics: Arc<S3Metrics>,
-    pub tls: Option<opens3_common::tls::TlsConfig>,
-    pub kms_key: Option<[u8; 32]>,
-    pub protocols: Protocols,
+    pub store: Arc<dyn FilerStore>, // 元数据 / KV 存储
+    pub blob: BlobClient,           // 向 Volume 读写 needle
+    pub events: EventBus,           // PUT/DELETE 事件
+    pub port: u16,                  // 监听端口
+    pub encrypt_key: Option<[u8; 32]>, // SSE 数据加密密钥（可选）
+    pub collection: String,         // 默认 collection（assign 用）
+    pub filer_metrics: Arc<FilerMetrics>, // Filer 侧 Prometheus 指标
+    pub auth: Arc<parking_lot::RwLock<AuthStore>>, // SigV4 AccessKey
+    pub policies: Arc<parking_lot::RwLock<PolicyStore>>, // IAM / 桶策略
+    pub lifecycles: Arc<parking_lot::RwLock<HashMap<String, LifecycleConfig>>>, // 桶 lifecycle
+    pub s3_metrics: Arc<S3Metrics>, // S3 侧指标
+    pub tls: Option<opens3_common::tls::TlsConfig>, // 可选 TLS
+    pub kms_key: Option<[u8; 32]>,  // 简易 KMS 派生密钥
+    pub protocols: Protocols,       // 路由协议开关
 }
 
+/// Axum 共享状态
 #[derive(Clone)]
 pub struct AppState {
-    pub server: Server,
+    pub server: Server, // 网关实例
 }
 
 impl Server {
+    /// 构造服务（无额外 Clerk peer）
     pub fn new_with_opts(
         store: Arc<dyn FilerStore>,
         clerk: String,
@@ -88,6 +94,7 @@ impl Server {
         )
     }
 
+    /// 构造服务；可指定 Clerk peer 列表以便故障转移
     pub fn new_with_clerk_peers(
         store: Arc<dyn FilerStore>,
         clerk: String,
@@ -101,6 +108,7 @@ impl Server {
         kms_passphrase: Option<String>,
         protocols: Protocols,
     ) -> Self {
+        // 有 access_key 时开启鉴权，并注入 root 身份
         let mut auth = AuthStore::new(access_key.is_some());
         if let Some((ak, sk)) = access_key {
             auth.upsert(AccessKey {
@@ -140,11 +148,13 @@ impl Server {
         }
     }
 
+    /// 启动 HTTP(S) 服务；启用 S3 时加载持久化配置并跑 lifecycle 后台任务
     pub async fn serve(self) -> anyhow::Result<()> {
         let addr: SocketAddr = format!("0.0.0.0:{}", self.port).parse()?;
         if self.protocols.s3 {
             self.load_persisted_config().await;
             let life = self.clone();
+            // 每 60s 扫描各桶 lifecycle
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
@@ -201,6 +211,7 @@ impl Server {
         Ok(())
     }
 
+    /// 从 KV 加载桶策略与 lifecycle 到内存
     async fn load_persisted_config(&self) {
         if let Ok(items) = self.store.kv_list("policy", "").await {
             let mut policies = self.policies.write();
@@ -220,6 +231,7 @@ impl Server {
         }
     }
 
+    /// 写入路径：分块落盘 + 更新元数据，并记录 Filer 指标
     pub async fn put_bytes(
         &self,
         path: &str,
@@ -247,6 +259,7 @@ impl Server {
         result
     }
 
+    /// put 核心：可选加密、chunk 写入 Volume、upsert EntryMeta、发 PUT 事件
     async fn put_bytes_inner(
         &self,
         path: &str,
@@ -265,6 +278,7 @@ impl Server {
             .write_chunked(&self.collection, &payload, None, ttl)
             .await?;
         let name = base_name(&path).to_string();
+        // 单 chunk 且非 meta 时用 file_id；多 chunk 走 chunks 列表
         let mut entry = if chunks.len() == 1 && !chunks[0].etag.starts_with("meta:") {
             EntryMeta::file(name, size, chunks[0].file_id.clone(), etag.clone())
         } else {
@@ -275,7 +289,7 @@ impl Server {
         };
         entry.encrypted = encrypted;
         entry.ttl_seconds = ttl;
-        entry.size = data.len() as u64;
+        entry.size = data.len() as u64; // 对外 size 为明文长度
         if self.store.find_entry(&path).await?.is_some() {
             self.store.update_entry(&path, &entry).await?;
         } else {
@@ -292,6 +306,7 @@ impl Server {
         Ok(entry)
     }
 
+    /// 读取路径内容与元数据（含指标）
     pub async fn get_bytes(&self, path: &str) -> opens3_common::Result<(EntryMeta, Vec<u8>)> {
         let t0 = Instant::now();
         let result = self.get_bytes_inner(path).await;
@@ -313,6 +328,7 @@ impl Server {
         result
     }
 
+    /// get 核心：查元数据、读 chunk、按需解密
     async fn get_bytes_inner(&self, path: &str) -> opens3_common::Result<(EntryMeta, Vec<u8>)> {
         let path = normalize_path(path);
         let entry = self
@@ -337,6 +353,7 @@ impl Server {
         Ok((entry, data))
     }
 
+    /// 删除路径（含指标）
     pub async fn delete_path(&self, path: &str) -> opens3_common::Result<()> {
         let t0 = Instant::now();
         let result = self.delete_path_inner(path).await;
@@ -352,6 +369,7 @@ impl Server {
         result
     }
 
+    /// delete 核心：删 Volume blob + 元数据，发 DELETE 事件；路径不存在视为成功
     async fn delete_path_inner(&self, path: &str) -> opens3_common::Result<()> {
         let path = normalize_path(path);
         if let Some(entry) = self.store.find_entry(&path).await? {
@@ -375,6 +393,7 @@ impl Server {
     }
 }
 
+/// 规范化路径：保证以 `/` 开头、去掉尾部 `/`（根除外）
 fn normalize_path(path: &str) -> String {
     let p = if path.is_empty() || path == "/" {
         "/".to_string()
@@ -390,6 +409,7 @@ fn normalize_path(path: &str) -> String {
     }
 }
 
+/// Prometheus `/metrics` 处理器
 async fn metrics_handler() -> impl axum::response::IntoResponse {
     (
         [(
@@ -400,8 +420,9 @@ async fn metrics_handler() -> impl axum::response::IntoResponse {
     )
 }
 
-/// Compatibility aliases for the fused [`Server`].
+/// 兼容别名：融合后的 [`Server`]
 pub type FilerServer = Server;
+/// 兼容别名：同 [`Server`]
 pub type S3Server = Server;
+/// 兼容别名：同 [`Server`]
 pub type Gateway = Server;
-

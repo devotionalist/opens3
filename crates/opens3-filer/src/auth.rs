@@ -1,21 +1,25 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
+//! AWS SigV4 鉴权：Header / 预签名 Query，以及 AccessKey 存储。
+
 use hmac::{Hmac, Mac};
 use opens3_common::types::AccessKey;
 use opens3_common::{Error, Result};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
-type HmacSha256 = Hmac<Sha256>;
+type HmacSha256 = Hmac<Sha256>; // SigV4 签名用 HMAC-SHA256
 
+/// AccessKey 内存库；`enabled=false` 时跳过校验（开发模式）
 #[derive(Clone, Default)]
 pub struct AuthStore {
-    keys: HashMap<String, AccessKey>,
+    keys: HashMap<String, AccessKey>, // access_key -> 密钥与身份
     /// If empty, auth is disabled (dev mode)
-    pub enabled: bool,
+    pub enabled: bool, // 是否强制鉴权
 }
 
 impl AuthStore {
+    /// 创建鉴权存储
     pub fn new(enabled: bool) -> Self {
         Self {
             keys: HashMap::new(),
@@ -23,14 +27,17 @@ impl AuthStore {
         }
     }
 
+    /// 插入或更新 AccessKey
     pub fn upsert(&mut self, key: AccessKey) {
         self.keys.insert(key.access_key.clone(), key);
     }
 
+    /// 按 access_key 查找
     pub fn get(&self, access_key: &str) -> Option<&AccessKey> {
         self.keys.get(access_key)
     }
 
+    /// 校验 SigV4：优先 Authorization 头，否则走预签名 Query；返回身份名
     pub fn verify_sigv4(
         &self,
         method: &str,
@@ -40,16 +47,17 @@ impl AuthStore {
         payload_hash: &str,
     ) -> Result<String> {
         if !self.enabled {
-            // Dev / open mode: treat as privileged root so IAM policies do not block.
+            // 开发 / 开放模式：视为 root，避免 IAM 拦截
             return Ok("root".into());
         }
         if let Some(auth) = headers.get("authorization") {
             return self.verify_header_sigv4(method, path, query, headers, payload_hash, auth);
         }
-        // Presigned URL: X-Amz-* query parameters
+        // 预签名 URL：X-Amz-* 查询参数
         self.verify_query_sigv4(method, path, query, headers, payload_hash)
     }
 
+    /// 校验 Authorization: AWS4-HMAC-SHA256 ... 头签名
     fn verify_header_sigv4(
         &self,
         method: &str,
@@ -66,6 +74,7 @@ impl AuthStore {
         let mut credential = None;
         let mut signed_headers = None;
         let mut signature = None;
+        // 解析 Credential / SignedHeaders / Signature
         for part in rest.split(',') {
             let part = part.trim();
             if let Some(v) = part.strip_prefix("Credential=") {
@@ -121,6 +130,7 @@ impl AuthStore {
         Ok(key.identity.clone())
     }
 
+    /// 校验预签名 Query（X-Amz-Algorithm 等），含过期检查
     fn verify_query_sigv4(
         &self,
         method: &str,
@@ -154,7 +164,7 @@ impl AuthStore {
             .get("X-Amz-Signature")
             .ok_or_else(|| Error::Unauthorized("missing X-Amz-Signature".into()))?;
 
-        // Expiry check
+        // 过期检查：X-Amz-Date + Expires
         if expires > 0 {
             if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(amz_date, "%Y%m%dT%H%M%SZ") {
                 let start = dt.and_utc().timestamp() as u64;
@@ -182,7 +192,7 @@ impl AuthStore {
             .get(access_key)
             .ok_or_else(|| Error::Unauthorized("unknown access key".into()))?;
 
-        // Canonical query excludes X-Amz-Signature
+        // 规范 query 需排除 X-Amz-Signature
         let canon_q = canonical_query_excluding(query, "X-Amz-Signature");
         let ph = if payload_hash.is_empty() {
             "UNSIGNED-PAYLOAD"
@@ -209,6 +219,7 @@ impl AuthStore {
     }
 }
 
+/// 按 SigV4 规范计算签名十六进制串
 fn compute_signature(
     secret_key: &str,
     method: &str,
@@ -247,6 +258,7 @@ fn compute_signature(
     Ok(hex::encode(mac.finalize().into_bytes()))
 }
 
+/// 将 query string 解析为 map（URL 解码）
 fn parse_query_map(query: &str) -> HashMap<String, String> {
     let mut m = HashMap::new();
     for part in query.split('&') {
@@ -262,6 +274,7 @@ fn parse_query_map(query: &str) -> HashMap<String, String> {
     m
 }
 
+/// 构造规范 query：排除指定键，按 key/value 排序后 URI 编码
 fn canonical_query_excluding(query: &str, exclude: &str) -> String {
     let mut pairs: Vec<(String, String)> = Vec::new();
     for part in query.split('&') {
@@ -283,6 +296,7 @@ fn canonical_query_excluding(query: &str, exclude: &str) -> String {
         .join("&")
 }
 
+/// application/x-www-form-urlencoded 风格解码（含 + -> 空格）
 fn urlencoding_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::new();
@@ -305,6 +319,7 @@ fn urlencoding_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// 十六进制字符转半字节
 fn from_hex(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),
@@ -314,6 +329,7 @@ fn from_hex(b: u8) -> Option<u8> {
     }
 }
 
+/// RFC 3986 非保留字符以外百分号编码
 fn uri_encode(s: &str) -> String {
     s.chars()
         .map(|c| match c {
@@ -323,6 +339,7 @@ fn uri_encode(s: &str) -> String {
         .collect()
 }
 
+/// 派生 SigV4 signing key：kDate -> kRegion -> kService -> aws4_request
 fn signing_key(secret: &str, date: &str, region: &str, service: &str) -> Result<Vec<u8>> {
     let k_date = hmac_sha256(format!("AWS4{secret}").as_bytes(), date.as_bytes())?;
     let k_region = hmac_sha256(&k_date, region.as_bytes())?;
@@ -330,6 +347,7 @@ fn signing_key(secret: &str, date: &str, region: &str, service: &str) -> Result<
     hmac_sha256(&k_service, b"aws4_request")
 }
 
+/// HMAC-SHA256 原始输出
 fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
     let mut mac =
         HmacSha256::new_from_slice(key).map_err(|e| Error::Internal(e.to_string()))?;
@@ -337,10 +355,11 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
     Ok(mac.finalize().into_bytes().to_vec())
 }
 
+/// 从请求头或 body 计算 payload hash（尊重 x-amz-content-sha256）
 pub fn payload_hash_from_headers(headers: &HashMap<String, String>, body: &[u8]) -> String {
     if let Some(h) = headers.get("x-amz-content-sha256") {
         if h != "UNSIGNED-PAYLOAD" && h != "STREAMING-AWS4-HMAC-SHA256-PAYLOAD" {
-            return h.clone();
+            return h.clone(); // 客户端已提供哈希
         }
         if h == "UNSIGNED-PAYLOAD" {
             return "UNSIGNED-PAYLOAD".into();

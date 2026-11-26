@@ -1,5 +1,7 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
+//! `.idx` 追加日志、批量 flush、并发读等行为测试。
+
 use opens3_volume::needle::{
     NeedleVolume, SyncMode, VolumeIoOpts, DEFAULT_IDX_FLUSH_EVERY, IDX_ENTRY_SIZE,
 };
@@ -8,6 +10,7 @@ use std::sync::Arc;
 use std::thread;
 use tempfile::tempdir;
 
+/// 覆盖写应追加 idx 记录，而非整表重写
 #[test]
 fn append_idx_grows_not_rewrite_full_map() {
     let dir = tempdir().unwrap();
@@ -30,6 +33,7 @@ fn append_idx_grows_not_rewrite_full_map() {
     assert_eq!(vol.read_needle(0, 2).unwrap(), b"new");
 }
 
+/// 批量 flush 后 reopen 应恢复全部 needle
 #[test]
 fn batch_flush_and_reopen_recovers() {
     let dir = tempdir().unwrap();
@@ -50,6 +54,7 @@ fn batch_flush_and_reopen_recovers() {
     assert_eq!(vol.read_needle(42, 9).unwrap(), &[42]);
 }
 
+/// 软删 tombstone 经 reopen 仍生效
 #[test]
 fn delete_tombstone_survives_reopen() {
     let dir = tempdir().unwrap();
@@ -69,6 +74,7 @@ fn delete_tombstone_survives_reopen() {
     assert_eq!(vol.deleted_count, 1);
 }
 
+/// VolumeStore 一次性 compact 仍正确
 #[test]
 fn store_compact_still_works() {
     let dir = tempdir().unwrap();
@@ -91,6 +97,7 @@ fn store_compact_still_works() {
     assert!(store.read(1, 1, 1).is_err());
 }
 
+/// 多线程共享读锁 + pread 并发正确
 #[test]
 fn concurrent_shared_reads_via_pread() {
     let dir = tempdir().unwrap();
@@ -128,6 +135,7 @@ fn concurrent_shared_reads_via_pread() {
     }
 }
 
+/// SyncMode 配置字符串解析
 #[test]
 fn sync_mode_parse() {
     assert_eq!(SyncMode::parse("none"), Some(SyncMode::None));
@@ -136,6 +144,7 @@ fn sync_mode_parse() {
     assert_eq!(SyncMode::parse("nope"), None);
 }
 
+/// 崩溃撕裂尾：reopen 只截 EOF，保留完整 needle
 #[test]
 fn reopen_truncates_torn_dat_tail_keeps_complete_needles() {
     let dir = tempdir().unwrap();

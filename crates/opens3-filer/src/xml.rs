@@ -1,8 +1,11 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
+//! S3 API 响应 XML 构造与 DeleteObjects 请求解析。
+
 use crate::error_xml::xml_escape;
 use opens3_common::types::EntryMeta;
 
+/// ListBuckets 响应 XML；`buckets` 为 (名称, 创建时间)
 pub fn list_buckets_xml(buckets: &[(String, String)]) -> String {
     let mut body = String::from(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -21,6 +24,7 @@ pub fn list_buckets_xml(buckets: &[(String, String)]) -> String {
     body
 }
 
+/// ListObjectsV2 响应；含 Contents 与 CommonPrefixes，以及分页 token
 pub fn list_objects_v2_xml(
     bucket: &str,
     prefix: &str,
@@ -73,6 +77,7 @@ pub fn list_objects_v2_xml(
     body
 }
 
+/// InitiateMultipartUpload 成功响应
 pub fn initiate_multipart_xml(bucket: &str, key: &str, upload_id: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -87,6 +92,7 @@ pub fn initiate_multipart_xml(bucket: &str, key: &str, upload_id: &str) -> Strin
     )
 }
 
+/// CompleteMultipartUpload 成功响应
 pub fn complete_multipart_xml(bucket: &str, key: &str, etag: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -104,6 +110,7 @@ pub fn complete_multipart_xml(bucket: &str, key: &str, etag: &str) -> String {
     )
 }
 
+/// CopyObject 结果 XML
 pub fn copy_object_xml(etag: &str, last_modified: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -116,6 +123,7 @@ pub fn copy_object_xml(etag: &str, last_modified: &str) -> String {
     )
 }
 
+/// 版本控制配置 XML；`enabled` 对应 Enabled / Suspended
 pub fn versioning_xml(enabled: bool) -> String {
     let status = if enabled { "Enabled" } else { "Suspended" };
     format!(
@@ -126,6 +134,7 @@ pub fn versioning_xml(enabled: bool) -> String {
     )
 }
 
+/// DeleteObjects 批量删除结果；`errors` 为 (Key, Code, Message)
 pub fn delete_objects_result_xml(deleted: &[String], errors: &[(String, &str, &str)]) -> String {
     let mut body = String::from(
         r#"<?xml version="1.0" encoding="UTF-8"?><DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">"#,
@@ -145,7 +154,7 @@ pub fn delete_objects_result_xml(deleted: &[String], errors: &[(String, &str, &s
     body
 }
 
-/// Parse `<Delete><Object><Key>..</Key></Object>...</Delete>`
+/// 解析 `<Delete><Object><Key>..</Key></Object>...</Delete>`，提取待删 key
 pub fn parse_delete_objects_xml(body: &str) -> Vec<String> {
     let mut keys = Vec::new();
     let mut rest = body;
@@ -164,6 +173,7 @@ pub fn parse_delete_objects_xml(body: &str) -> Vec<String> {
     keys
 }
 
+/// XML 实体反转义（顺序需先处理 &amp; 以外实体再处理 &amp;）
 fn xml_unescape(s: &str) -> String {
     s.replace("&lt;", "<")
         .replace("&gt;", ">")

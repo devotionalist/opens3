@@ -1,5 +1,7 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
+//! 集群拓扑与分配状态：VolumeServer / Volume 元数据、心跳、assign、副本策略。
+
 use opens3_common::fileid::FileId;
 use opens3_common::replication::Replication;
 use opens3_common::topology::TopologyLocation;
@@ -14,22 +16,23 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// How `assign` picks among writable volumes.
+/// `assign` 在可写卷中的选取策略。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AssignPolicy {
-    /// Uniform random among candidates (default).
+    /// 候选中均匀随机（默认）。
     #[default]
     Random,
-    /// Cycle through candidates in volume-id order.
+    /// 按 volume-id 顺序轮询。
     RoundRobin,
-    /// Weighted random by primary node's `free_disk_bytes`.
+    /// 按主节点 `free_disk_bytes` 加权随机。
     FreeDisk,
-    /// Prefer the volume with the smallest current `size`.
+    /// 优先当前 `size` 最小的卷。
     LeastSize,
 }
 
 impl AssignPolicy {
+    /// 序列化用英文 id。
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Random => "random",
@@ -39,6 +42,7 @@ impl AssignPolicy {
         }
     }
 
+    /// 中文展示标签（Admin UI）。
     pub fn label_zh(self) -> &'static str {
         match self {
             Self::Random => "随机",
@@ -52,6 +56,7 @@ impl AssignPolicy {
 impl FromStr for AssignPolicy {
     type Err = Error;
 
+    /// 解析策略名（含若干别名）。
     fn from_str(s: &str) -> Result<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "random" | "rand" => Ok(Self::Random),
@@ -65,41 +70,44 @@ impl FromStr for AssignPolicy {
     }
 }
 
+/// Volume 数据节点在 Master 上的注册信息。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VolumeServerInfo { // 服务器信息
-    pub node_id: String, // 节点ID
-    pub location: TopologyLocation, // 位置
-    pub max_volume_count: u64, // 最大卷的数量
-    pub free_disk_bytes: u64, // 空闲的磁盘空间
-    pub last_seen: u64, // 最后一次看到的时间
-    /// Ops switch: new data nodes start offline and do not receive assigns until online.
+pub struct VolumeServerInfo {
+    pub node_id: String,                // 节点 ID（pod / 逻辑名）
+    pub location: TopologyLocation,     // DC/rack/url
+    pub max_volume_count: u64,          // 可承载卷上限
+    pub free_disk_bytes: u64,           // 空闲磁盘字节
+    pub last_seen: u64,                 // 最近心跳 Unix 秒
+    /// 运维开关：新节点默认 offline，上线前不接 assign。
     #[serde(default)]
-    pub online: bool, // 是否在线
-    /// When set, this data node was added as a replica of `replica_of` (source node_id / pod).
+    pub online: bool,
+    /// 若设置，表示本节点是 `replica_of`（源 node_id）的副本。
     #[serde(default)]
     pub replica_of: Option<String>,
-    /// Process boot id from Volume heartbeat; change ⇒ restart ⇒ must re-reconcile.
+    /// Volume 进程 boot id；变化 ⇒ 重启 ⇒ 需重新指纹对齐。
     #[serde(default)]
     pub boot_id: String,
-    /// After restart, false until fingerprint align with peer replicas finishes.
-    /// Defaults true for old Raft snapshots so existing clusters keep serving.
+    /// 重启后为 false，直到与 peer 指纹对齐完成。
+    /// 旧 Raft 快照默认 true，保证存量集群可继续服务。
     #[serde(default = "default_true")]
     pub write_ready: bool,
 }
 
+/// serde 缺省 true（兼容旧快照）。
 fn default_true() -> bool {
     true
 }
 
-/// Lightweight volume content fingerprint (`size:file_count:deleted_count`).
+/// 轻量卷内容指纹（`size:file_count:deleted_count`）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VolumeFingerprint {
-    pub size: u64,
-    pub file_count: u64,
-    pub deleted_count: u64,
+    pub size: u64,          // 卷字节
+    pub file_count: u64,    // 存活文件数
+    pub deleted_count: u64, // 软删文件数
 }
 
 impl VolumeFingerprint {
+    /// 构造指纹。
     pub fn new(size: u64, file_count: u64, deleted_count: u64) -> Self {
         Self {
             size,
@@ -108,40 +116,44 @@ impl VolumeFingerprint {
         }
     }
 
+    /// 比较用字符串键。
     pub fn key(&self) -> String {
         format!("{}:{}:{}", self.size, self.file_count, self.deleted_count)
     }
 }
 
-/// Result of applying a volume-server heartbeat.
+/// 应用一次 VolumeServer 心跳的结果。
 #[derive(Debug, Clone)]
 pub struct HeartbeatOutcome {
-    pub create: Vec<u32>,
-    /// True when `boot_id` changed (or first seen) — caller should run fingerprint reconcile.
+    pub create: Vec<u32>, // 需在该节点物化的卷 id
+    /// `boot_id` 变化（或首次见到）时为 true — 调用方应跑指纹 reconcile。
     pub needs_reconcile: bool,
-    pub write_ready: bool,
+    pub write_ready: bool, // 心跳后该节点是否可写
 }
 
+/// ClusterState 内部可变状态（RwLock 保护）。
 struct Inner {
-    servers: HashMap<String, VolumeServerInfo>,
-    volumes: HashMap<u32, VolumeMeta>,
-    next_volume_id: u32,
-    next_file_key: u64,
-    volume_seq_by_server: HashMap<String, Vec<u32>>,
+    servers: HashMap<String, VolumeServerInfo>, // node_id → 节点
+    volumes: HashMap<u32, VolumeMeta>,          // volume_id → 元数据
+    next_volume_id: u32,                        // 下一可用卷 id
+    next_file_key: u64,                         // 下一 file_key
+    volume_seq_by_server: HashMap<String, Vec<u32>>, // 节点上卷创建顺序
     assign_policy: AssignPolicy,
-    /// Cursor for [`AssignPolicy::RoundRobin`].
+    /// [`AssignPolicy::RoundRobin`] 游标。
     assign_rr_cursor: u64,
-    /// Max bytes/sec for heal/balance volume push (`0` = unlimited).
+    /// heal/balance 推送限速字节/秒（`0` = 不限）。
     heal_max_bps: u64,
 }
 
+/// 集群拓扑内存态（可克隆共享；经 Raft 快照复制）。
 #[derive(Clone)]
-pub struct ClusterState {  // 集群状态  
-    inner: Arc<RwLock<Inner>>,  // 集群状态的内部实现  
-    pub default_replication: Replication, // 默认的复制策略  
+pub struct ClusterState {
+    inner: Arc<RwLock<Inner>>,
+    pub default_replication: Replication, // 默认 XYZ 复制策略
 }
 
-impl ClusterState { // 集群状态的操作
+impl ClusterState {
+    /// 以给定默认复制策略创建空集群。
     pub fn new(default_replication: Replication) -> Self {
         Self {
             inner: Arc::new(RwLock::new(Inner {
@@ -158,6 +170,7 @@ impl ClusterState { // 集群状态的操作
         }
     }
 
+    /// 普通心跳（无 bootstrap 意图）。
     pub fn heartbeat(
         &self,
         mut info: VolumeServerInfo,
@@ -166,11 +179,11 @@ impl ClusterState { // 集群状态的操作
         self.heartbeat_with_bootstrap(info, reported, false, None)
     }
 
-    /// Heartbeat with deploy bootstrap intents (`desired_online` / `desired_replica_of`).
+    /// 带部署 bootstrap 意图的心跳（`desired_online` / `desired_replica_of`）。
     ///
-    /// - First registration: apply bootstrap (replica waits offline until source exists).
-    /// - Later: preserve ops online/replica_of; while still offline with no pairing,
-    ///   keep trying `desired_replica_of`, then promote online if desired.
+    /// - 首次注册：应用 bootstrap（副本等源出现前保持 offline）。
+    /// - 之后：保留运维 online/replica_of；仍 offline 且未配对时继续尝试
+    ///   `desired_replica_of`，满足后再按需上线。
     pub fn heartbeat_with_bootstrap(
         &self,
         mut info: VolumeServerInfo,
@@ -193,13 +206,13 @@ impl ClusterState { // 集群状态的操作
             info.replica_of = None;
         }
         if restart {
-            // Restart / first registration: block writes until fingerprint align.
+            // 重启 / 首次注册：对齐指纹前禁止写入。
             info.write_ready = false;
         } else {
             info.write_ready = prev.map(|s| s.write_ready).unwrap_or(false);
         }
 
-        // Resolve bootstrap replica / online before insert so volumes follow node state.
+        // 插入前解析 bootstrap 副本 / 上线，使卷状态跟随节点。
         let desired_replica = desired_replica_of
             .as_ref()
             .map(|s| s.trim().to_string())
@@ -235,7 +248,7 @@ impl ClusterState { // 集群状态的操作
             entry.size = r.size;
             entry.file_count = r.file_count;
             entry.deleted_count = r.deleted_count;
-            // Never auto-promote Offline → Writable from heartbeat; node online does.
+            // 心跳不自动 Offline→writable；由节点 online 提升。
             if r.sealed {
                 entry.state = VolumeState::Sealed;
             } else if r.read_only && !matches!(entry.state, VolumeState::Offline) {
@@ -251,9 +264,8 @@ impl ClusterState { // 集群状态的操作
             g.next_volume_id = g.next_volume_id.max(r.id + 1);
         }
 
-        // Always refresh URLs for every volume hosted on this node — even when the
-        // disk report is empty (Pod restart / emptyDir wipe). Otherwise assign keeps
-        // handing out stale Pod IPs and S3 fails with grpc connect transport errors.
+        // 刷新本节点承载的所有卷 URL — 即使磁盘报告为空（Pod 重启 / emptyDir 清空）。
+        // 否则 assign 会继续下发过期 Pod IP，S3 侧 grpc 连接失败。
         if let Some(loc) = &srv_loc {
             for v in g.volumes.values_mut() {
                 if let Some(existing) = v.locations.iter_mut().find(|l| l.node_id == node_id) {
@@ -262,7 +274,7 @@ impl ClusterState { // 集群状态的操作
             }
         }
 
-        // auto-create volumes if under capacity
+        // 未达容量上限时自动创建卷槽
         let mut to_create = Vec::new();
         let srv = g.servers.get(&node_id).cloned();
         if let Some(srv) = srv {
@@ -278,7 +290,7 @@ impl ClusterState { // 集群状态的操作
                     g.next_volume_id += 1;
                     let mut meta = VolumeMeta::new(id, "", self.default_replication);
                     meta.locations.push(srv.location.clone());
-                    // Volumes follow the node: already-online nodes get writable vols.
+                    // 卷跟随节点：已 online 的节点上新卷直接可写。
                     if srv.online {
                         meta.state = VolumeState::Writable;
                     }
@@ -290,7 +302,7 @@ impl ClusterState { // 集群状态的操作
                     to_create.push(id);
                 }
             }
-            // Rematerialize topology volumes missing on disk after restart.
+            // 重启后磁盘缺失的拓扑卷需重新物化。
             for v in g.volumes.values() {
                 if v.locations.iter().any(|l| l.node_id == node_id)
                     && !reported_ids.contains(&v.id)
@@ -300,7 +312,7 @@ impl ClusterState { // 集群状态的操作
                 }
             }
         }
-        // Single-copy / empty: nothing to compare — mark write-ready immediately.
+        // 单副本 / 无多副本卷：无需比对，立即 write-ready。
         let mut needs_reconcile = restart;
         if restart {
             let multi = g.volumes.values().any(|v| {
@@ -325,6 +337,7 @@ impl ClusterState { // 集群状态的操作
         }
     }
 
+    /// 设置节点 write_ready；节点不存在返回 false。
     pub fn set_write_ready(&self, node_id: &str, ready: bool) -> bool {
         let mut g = self.inner.write();
         if let Some(s) = g.servers.get_mut(node_id) {
@@ -334,6 +347,7 @@ impl ClusterState { // 集群状态的操作
         false
     }
 
+    /// 查询节点是否 write_ready（未知节点视为 false）。
     pub fn is_write_ready(&self, node_id: &str) -> bool {
         self.inner
             .read()
@@ -343,7 +357,7 @@ impl ClusterState { // 集群状态的操作
             .unwrap_or(false)
     }
 
-    /// Volumes hosted on `node_id` that also have at least one other location.
+    /// 位于 `node_id` 且另有至少一个副本位置的卷。
     pub fn multi_copy_volumes_on(&self, node_id: &str) -> Vec<VolumeMeta> {
         self.inner
             .read()
@@ -356,6 +370,7 @@ impl ClusterState { // 集群状态的操作
             .collect()
     }
 
+    /// 分配 FileId：选可写卷、补齐副本位置、签发 cookie。
     pub fn assign(
         &self,
         collection: &str,
@@ -366,9 +381,8 @@ impl ClusterState { // 集群状态的操作
         let repl = replication.unwrap_or(self.default_replication);
         let mut g = self.inner.write();
 
-        // Degraded writes: volume is assignable if ≥1 location is online+write_ready.
-        // Reconciling (restart) nodes are omitted from the returned location list so
-        // catch-up can run in the background without stalling the cluster write path.
+        // 降级写：至少一个 location online+write_ready 即可 assign。
+        // 正在 reconcile（重启）的节点不放入返回 locations，后台追赶不堵写路径。
         let candidates: Vec<u32> = g
             .volumes
             .iter()
@@ -386,10 +400,10 @@ impl ClusterState { // 集群状态的操作
             .map(|(id, _)| *id)
             .collect();
 
-        // Do not auto-create here: new volumes start offline and must be onlined by ops.
+        // 此处不自动建卷：新卷默认 offline，须运维上线。
         let volume_id = Self::pick_assign_volume(&mut g, &candidates)?;
 
-        // ensure collection set; top-up replica locations if under-replicated
+        // 补齐 collection；欠副本时 top-up 位置
         let topup = pick_locations(&g.servers, repl).unwrap_or_default();
         let meta = {
             let v = g
@@ -413,7 +427,7 @@ impl ClusterState { // 集群状态的操作
             v.clone()
         };
 
-        // Prefer live server URLs (heartbeat) over possibly stale volume.locations.
+        // 优先用心跳中的存活 URL，避免 volume.locations 过期。
         let write_locs: Vec<_> = meta
             .locations
             .iter()
@@ -441,11 +455,12 @@ impl ClusterState { // 集群状态的操作
             count: count.max(1),
             url: primary.url.clone(),
             public_url: primary.public_url.clone(),
-            // Only write-ready replicas — sync fan-out skips nodes still catching up.
+            // 仅 write-ready 副本 — 同步扇出跳过仍在追赶的节点。
             locations: write_locs,
         })
     }
 
+    /// 按 volume_id 查找元数据。
     pub fn lookup(&self, volume_id: u32) -> Result<VolumeMeta> {
         self.inner
             .read()
@@ -455,6 +470,7 @@ impl ClusterState { // 集群状态的操作
             .ok_or_else(|| Error::NotFound(format!("volume {volume_id}")))
     }
 
+    /// 列出卷；`collection` 空则全部。
     pub fn list_volumes(&self, collection: &str) -> Vec<VolumeMeta> {
         self.inner
             .read()
@@ -465,6 +481,7 @@ impl ClusterState { // 集群状态的操作
             .collect()
     }
 
+    /// 将卷标记为 Sealed。
     pub fn seal(&self, volume_id: u32) -> Result<()> {
         let mut g = self.inner.write();
         let v = g
@@ -475,7 +492,7 @@ impl ClusterState { // 集群状态的操作
         Ok(())
     }
 
-    /// Bring a data volume online (Offline → Writable) or take it offline for new writes.
+    /// 卷上线（Offline→Writable）或下线（禁止新写）。
     pub fn set_volume_online(&self, volume_id: u32, online: bool) -> Result<VolumeState> {
         let mut g = self.inner.write();
         let v = g
@@ -510,12 +527,12 @@ impl ClusterState { // 集群状态的操作
         Ok(v.state)
     }
 
-    /// Record that `node_id` is a replica of `source` (or clear with None).
-    /// Constraints:
-    /// - a data node may be the replica of at most one other node (single source);
-    /// - one source may have many replicas (fan-out: A←B and A←C);
-    /// - chaining is allowed (A←B←C); cycles are rejected;
-    /// - replica pairing can only change while the node is offline.
+    /// 记录 `node_id` 是 `source` 的副本（`None` 清除）。
+    /// 约束：
+    /// - 一节点至多一个源（单源）；
+    /// - 一源可有多副本（扇出 A←B、A←C）；
+    /// - 允许链式（A←B←C），拒绝环；
+    /// - 仅 offline 时可改配对。
     pub fn set_replica_of(&self, node_id: &str, source: Option<&str>) -> Result<()> {
         let mut g = self.inner.write();
         if !g.servers.contains_key(node_id) {
@@ -526,7 +543,7 @@ impl ClusterState { // 集群状态的操作
             .map(str::trim)
             .filter(|x| !x.is_empty())
             .map(|x| x.to_string());
-        // Any change to replica_of while online is rejected (set or clear).
+        // online 时拒绝任何 replica_of 变更（设置或清除）。
         if target_online {
             let cur = g.servers.get(node_id).and_then(|s| s.replica_of.clone());
             let next = src.clone();
@@ -546,7 +563,7 @@ impl ClusterState { // 集群状态的操作
             if !g.servers.contains_key(src) {
                 return Err(Error::NotFound(format!("data node {src}")));
             }
-            // Chaining OK; reject cycles (walk source's replica_of chain).
+            // 链式允许；拒绝环（沿源的 replica_of 链走）。
             let mut walk = src.clone();
             for _ in 0..=g.servers.len() {
                 if walk == node_id {
@@ -565,7 +582,7 @@ impl ClusterState { // 集群状态的操作
                         "{node_id} is already a replica of {cur}; clear first before switching"
                     )));
                 }
-                // same source — idempotent
+                // 同源 — 幂等
                 return Ok(());
             }
         }
@@ -574,8 +591,7 @@ impl ClusterState { // 集群状态的操作
         Ok(())
     }
 
-    /// Ops switch for a data node. Brings the node's data volumes online/offline with it;
-    /// per-volume ops are not exposed — volumes follow the node.
+    /// 数据节点运维开关；其上数据卷随节点上下线（不单独暴露按卷运维）。
     pub fn set_server_online(&self, node_id: &str, online: bool) -> Result<()> {
         let mut g = self.inner.write();
         let s = g
@@ -598,8 +614,7 @@ impl ClusterState { // 集群状态的操作
         Ok(())
     }
 
-    /// Update a volume's XYZ replication policy. Does not copy data; call heal
-    /// afterwards to materialize missing replicas on other volume servers.
+    /// 更新卷 XYZ 复制策略；不拷贝数据，需随后 heal 物化缺失副本。
     pub fn set_replication(&self, volume_id: u32, repl: Replication) -> Result<VolumeMeta> {
         let mut g = self.inner.write();
         let v = g
@@ -615,9 +630,8 @@ impl ClusterState { // 集群状态的操作
         Ok(v.clone())
     }
 
-    /// Apply XYZ policy to many volumes. `from_code` when set only touches volumes
-    /// whose current replication string matches (e.g. upgrade all `000` → `001`).
-    /// Empty `volume_ids` means all volumes (optionally filtered by `from_code`).
+    /// 批量应用 XYZ；`from_code` 非空时只改当前策略匹配的卷（如全部 `000`→`001`）。
+    /// 空 `volume_ids` 表示全部（可再按 `from_code` 过滤）。
     pub fn set_replication_batch(
         &self,
         volume_ids: &[u32],
@@ -649,9 +663,8 @@ impl ClusterState { // 集群状态的操作
         Ok(updated)
     }
 
-    /// Create `count` empty volumes with the given XYZ placement plan (locations
-    /// reserved on master). Physical files are created via volume heartbeat /
-    /// replicate; this is distinct from node-local `/admin/create_volume`.
+    /// 在 Master 上预留 `count` 个空卷及 XYZ 放置；物理文件靠心跳 / replicate 创建
+    ///（不同于节点本地 `/admin/create_volume`）。
     pub fn grow_volumes(
         &self,
         count: u32,
@@ -667,7 +680,7 @@ impl ClusterState { // 集群状态的操作
             g.next_volume_id += 1;
             let mut meta = VolumeMeta::new(id, collection, replication);
             meta.locations = locations;
-            // Pick only online servers; new volumes on online nodes start writable.
+            // 仅挑 online 节点；其上新卷直接 Writable。
             if meta.locations.iter().any(|l| {
                 g.servers.get(&l.node_id).map(|s| s.online).unwrap_or(false)
             }) {
@@ -685,6 +698,7 @@ impl ClusterState { // 集群状态的操作
         Ok(out)
     }
 
+    /// 将卷标记为 EC 编码态。
     pub fn mark_ec(&self, volume_id: u32) -> Result<()> {
         let mut g = self.inner.write();
         let v = g
@@ -695,16 +709,16 @@ impl ClusterState { // 集群状态的操作
         Ok(())
     }
 
+    /// 列出全部数据节点。
     pub fn servers(&self) -> Vec<VolumeServerInfo> {
         self.inner.read().servers.values().cloned().collect()
     }
 
-    /// Explicitly drop a data node (e.g. after STS scale-in). Removes its locations;
-    /// volumes with no remaining locations are deleted from the catalog.
+    /// 显式移除数据节点（如 STS 缩容）。清其 location；无剩余位置的卷从目录删除。
     pub fn remove_server(&self, node_id: &str) -> Result<()> {
         let mut g = self.inner.write();
         if g.servers.remove(node_id).is_none() {
-            // Idempotent: already gone is OK for ops delete.
+            // 幂等：已不存在对运维删除仍 OK。
             return Ok(());
         }
         g.volume_seq_by_server.remove(node_id);
@@ -726,13 +740,13 @@ impl ClusterState { // 集群状态的操作
         Ok(())
     }
 
+    /// 剔除心跳超时节点，并清理幽灵卷 location。
     pub fn prune_stale(&self, max_age: Duration) {
         let now = now_secs();
         let mut g = self.inner.write();
         g.servers
             .retain(|_, s| now.saturating_sub(s.last_seen) < max_age.as_secs());
-        // Drop locations on dead data nodes; remove volumes that no longer have any location.
-        // Otherwise Admin keeps showing ghost data volumes after scale-in / emptyDir recycle.
+        // 去掉死节点上的 location；无位置的卷删除，避免缩容 / emptyDir 后 Admin 残留幽灵卷。
         let live: std::collections::HashSet<String> = g.servers.keys().cloned().collect();
         let mut drop_ids = Vec::new();
         for (id, v) in g.volumes.iter_mut() {
@@ -754,6 +768,7 @@ impl ClusterState { // 集群状态的操作
         });
     }
 
+    /// 返回 (节点数, 卷数, 总字节, 总文件数)。
     pub fn stats(&self) -> (usize, usize, u64, u64) {
         let g = self.inner.read();
         let vs = g.servers.len();
@@ -763,7 +778,7 @@ impl ClusterState { // 集群状态的操作
         (vs, vc, size, files)
     }
 
-    /// Volumes whose location count is below replication.total_copies().
+    /// location 数低于 replication.total_copies() 的卷数量（不含 EC）。
     pub fn under_replicated_count(&self) -> usize {
         self.inner
             .read()
@@ -776,10 +791,12 @@ impl ClusterState { // 集群状态的操作
             .count()
     }
 
+    /// 当前 assign 策略。
     pub fn assign_policy(&self) -> AssignPolicy {
         self.inner.read().assign_policy
     }
 
+    /// 设置 assign 策略；切到 RoundRobin 时重置游标。
     pub fn set_assign_policy(&self, policy: AssignPolicy) {
         let mut g = self.inner.write();
         g.assign_policy = policy;
@@ -788,15 +805,17 @@ impl ClusterState { // 集群状态的操作
         }
     }
 
-    /// Heal/balance push rate limit in bytes/sec (`0` = unlimited).
+    /// heal/balance 推送限速（字节/秒；`0` = 不限）。
     pub fn heal_max_bps(&self) -> u64 {
         self.inner.read().heal_max_bps
     }
 
+    /// 设置 heal/balance 限速。
     pub fn set_heal_max_bps(&self, max_bps: u64) {
         self.inner.write().heal_max_bps = max_bps;
     }
 
+    /// 按策略从候选卷中选一个 volume_id。
     fn pick_assign_volume(g: &mut Inner, candidates: &[u32]) -> Result<u32> {
         if candidates.is_empty() {
             return Err(Error::NoWritableVolume);
@@ -853,6 +872,7 @@ impl ClusterState { // 集群状态的操作
         })
     }
 
+    /// 导出可 Raft 复制的集群快照。
     pub fn export_snapshot(&self) -> ClusterSnapshot {
         let g = self.inner.read();
         ClusterSnapshot {
@@ -866,6 +886,7 @@ impl ClusterState { // 集群状态的操作
         }
     }
 
+    /// 用快照覆盖本地拓扑（follower apply / 启动恢复）。
     pub fn import_snapshot(&self, snap: ClusterSnapshot) {
         let mut g = self.inner.write();
         g.servers.clear();
@@ -890,6 +911,7 @@ impl ClusterState { // 集群状态的操作
         g.heal_max_bps = snap.heal_max_bps;
     }
 
+    /// 从卷上移除某节点的 location。
     pub fn remove_volume_location(&self, volume_id: u32, node_id: &str) -> Result<()> {
         let mut g = self.inner.write();
         let v = g
@@ -900,6 +922,7 @@ impl ClusterState { // 集群状态的操作
         Ok(())
     }
 
+    /// 为卷添加 location（幂等）；成功返回最新元数据。
     pub fn add_volume_location(
         &self,
         volume_id: u32,
@@ -925,8 +948,8 @@ impl ClusterState { // 集群状态的操作
             .ok_or_else(|| Error::NotFound(format!("volume {volume_id}")))
     }
 
-    /// Prepare volumes on `source_node` to take an extra replica on `target_node`:
-    /// bump XYZ when current copies are saturated, return ids that still lack target.
+    /// 为 `source_node` 上的卷在 `target_node` 准备额外副本：
+    /// 副本已满时抬升 XYZ，返回仍缺 target 的卷 id。
     pub fn prepare_place_replicas(
         &self,
         source_node: &str,
@@ -959,7 +982,7 @@ impl ClusterState { // 集群状态的操作
             if v.locations.iter().any(|l| l.node_id == target_node) {
                 continue;
             }
-            // Need at least one more copy slot for the new replica node.
+            // 新副本节点至少需要一个额外 copy 槽。
             let have = v.locations.len() as u8;
             if v.replication.total_copies() <= have {
                 let mut r = v.replication;
@@ -971,6 +994,7 @@ impl ClusterState { // 集群状态的操作
         Ok(need_heal)
     }
 
+    /// 转移卷主位置：去掉 from，并把 to 插到 locations 首位。
     pub fn transfer_volume_primary(
         &self,
         volume_id: u32,
@@ -990,7 +1014,7 @@ impl ClusterState { // 集群状态的操作
     }
 }
 
-/// Apply Helm/CLI bootstrap intents while holding the cluster write lock.
+/// 持有写锁时应用 Helm/CLI bootstrap 意图。
 fn apply_bootstrap_locked(
     g: &mut Inner,
     node_id: &str,
@@ -1003,10 +1027,10 @@ fn apply_bootstrap_locked(
             return;
         }
         if !g.servers.contains_key(src) {
-            // Source not registered yet — stay offline until it appears.
+            // 源尚未注册 — 保持 offline 直至出现。
             return;
         }
-        // Reject cycles (walk source chain).
+        // 拒绝环（沿源链走）。
         let mut walk = src.to_string();
         for _ in 0..=g.servers.len() {
             if walk == node_id {
@@ -1025,6 +1049,7 @@ fn apply_bootstrap_locked(
     }
 }
 
+/// 将节点上 Offline↔Writable 卷随节点上下线切换。
 fn promote_node_volumes_locked(g: &mut Inner, node_id: &str, online: bool) {
     for v in g.volumes.values_mut() {
         if !v.locations.iter().any(|l| l.node_id == node_id) {
@@ -1040,50 +1065,54 @@ fn promote_node_volumes_locked(g: &mut Inner, node_id: &str, online: bool) {
     }
 }
 
+/// 可经 Raft 复制的集群全量快照。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClusterSnapshot { // 集群快照
-    pub servers: Vec<VolumeServerInfo>, // 服务器信息
-    pub volumes: Vec<VolumeMeta>, // 卷的元数据
-    pub next_volume_id: u32, // 下一个卷的ID
-    pub next_file_key: u64, // 下一个文件的键
+pub struct ClusterSnapshot {
+    pub servers: Vec<VolumeServerInfo>, // 数据节点
+    pub volumes: Vec<VolumeMeta>,       // 卷元数据
+    pub next_volume_id: u32,            // 下一卷 id
+    pub next_file_key: u64,             // 下一 file_key
     #[serde(default)]
     pub assign_policy: AssignPolicy,
     #[serde(default)]
-    pub assign_rr_cursor: u64,
-    /// Max heal/balance push rate in bytes/sec; `0` = unlimited.
+    pub assign_rr_cursor: u64,          // RoundRobin 游标
+    /// heal/balance 推送限速字节/秒；`0` = 不限。
     #[serde(default)]
     pub heal_max_bps: u64,
 }
 
+/// `assign` 成功结果。
 #[derive(Debug, Clone)]
-pub struct AssignResult { // 分配结果
-    pub fid: FileId, // 文件ID
-    pub count: u32, // 卷的数量
-    pub url: String, // URL
-    pub public_url: String, // 公共URL
-    pub locations: Vec<TopologyLocation>, // 位置
+pub struct AssignResult {
+    pub fid: FileId,                           // 分配的 FileId
+    pub count: u32,                            // 连续 key 数量
+    pub url: String,                           // 主副本内部 URL
+    pub public_url: String,                    // 主副本对外 URL
+    pub locations: Vec<TopologyLocation>,      // 可写副本位置
 }
 
+/// Volume 心跳上报的单卷状态。
 #[derive(Debug, Clone, Deserialize)]
-pub struct VolumeReport { // 卷的报告
-    pub id: u32, // 卷的ID
+pub struct VolumeReport {
+    pub id: u32, // 卷 ID
     #[serde(default)]
-    pub collection: String, // 卷的集合
+    pub collection: String,
     #[serde(default)]
-    pub size: u64, // 卷的大小
+    pub size: u64,
     #[serde(default)]
-    pub file_count: u64, // 卷的文件数量
+    pub file_count: u64,
     #[serde(default)]
-    pub deleted_count: u64, // 卷的删除数量
+    pub deleted_count: u64,
     #[serde(default)]
-    pub read_only: bool, // 卷的只读状态
+    pub read_only: bool,
     #[serde(default)]
-    pub sealed: bool, // 卷的密封状态
-    /// Optional; if empty Master derives from size/file_count/deleted_count.
+    pub sealed: bool,
+    /// 可选；空则 Master 由 size/file_count/deleted_count 推导。
     #[serde(default)]
     pub fingerprint: String,
 }
 
+/// Unix 秒。
 fn now_secs() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -1092,6 +1121,7 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
+/// 按 XYZ 策略从 online+write_ready 节点挑选放置位置。
 fn pick_locations(
     servers: &HashMap<String, VolumeServerInfo>,
     repl: Replication,
@@ -1103,14 +1133,14 @@ fn pick_locations(
     if list.is_empty() {
         return Err(Error::NoWritableVolume);
     }
-    // prefer more free space
+    // 优先空闲空间更大的节点
     list.sort_by(|a, b| b.free_disk_bytes.cmp(&a.free_disk_bytes));
 
     let mut chosen: Vec<TopologyLocation> = Vec::new();
     let primary = list[0].location.clone();
     chosen.push(primary.clone());
 
-    // same rack extras
+    // 同 rack 额外副本
     for s in &list {
         if chosen.len() as u8 >= repl.total_copies() {
             break;
@@ -1125,7 +1155,7 @@ fn pick_locations(
             chosen.push(s.location.clone());
         }
     }
-    // diff rack same dc
+    // 同 DC 不同 rack
     for s in &list {
         if chosen.len() as u8 >= repl.total_copies() {
             break;
@@ -1137,7 +1167,7 @@ fn pick_locations(
             chosen.push(s.location.clone());
         }
     }
-    // diff dc
+    // 不同 DC
     for s in &list {
         if chosen.len() as u8 >= repl.total_copies() {
             break;
@@ -1148,7 +1178,7 @@ fn pick_locations(
             chosen.push(s.location.clone());
         }
     }
-    // fill remaining with any
+    // 仍不足则任意补齐
     for s in &list {
         if chosen.len() as u8 >= repl.total_copies() {
             break;
@@ -1161,7 +1191,7 @@ fn pick_locations(
     if chosen.is_empty() {
         return Err(Error::NoWritableVolume);
     }
-    // shuffle secondary slightly
+    // 轻微打乱次要副本顺序
     let len = chosen.len();
     if len > 1 {
         let swap = rand::thread_rng().gen_range(1..len);
@@ -1170,6 +1200,7 @@ fn pick_locations(
     Ok(chosen)
 }
 
+/// 测试辅助：Instant 相对经过秒（保留占位）。
 #[allow(dead_code)]
 fn _instant_epoch(i: Instant) -> u64 {
     i.elapsed().as_secs()
@@ -1183,10 +1214,12 @@ mod tests {
     use std::collections::HashSet;
     use std::str::FromStr;
 
+    /// 测试用拓扑位置。
     fn loc(node: &str) -> TopologyLocation {
         TopologyLocation::new("dc1", "rack1", node, format!("http://{node}:8080"))
     }
 
+    /// 测试用已 online+write_ready 的节点。
     fn online_server(node: &str) -> VolumeServerInfo {
         VolumeServerInfo {
             node_id: node.into(),

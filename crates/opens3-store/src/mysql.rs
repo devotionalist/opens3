@@ -1,9 +1,9 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
-//! MySQL / TiDB-backed FilerStore for multi-instance Filer/S3.
+//! MySQL / TiDB 后端 FilerStore，供多实例 Filer/S3 共享元数据。
 //!
-//! TiDB speaks the MySQL protocol; use the same `--meta-backend mysql|tidb`
-//! with a `mysql://` URL (TiDB default port 4000).
+//! TiDB 兼容 MySQL 协议；`--meta-backend mysql|tidb` 配合 `mysql://` URL
+//!（TiDB 默认端口 4000）。
 
 use crate::FilerStore;
 use async_trait::async_trait;
@@ -13,12 +13,14 @@ use opens3_common::{Error, Result};
 use sqlx::mysql::MySqlPoolOptions;
 use sqlx::{MySqlPool, Row};
 
+/// 基于 MySQL/TiDB 的 FilerStore。
 #[derive(Clone)]
 pub struct MysqlStore {
-    pool: MySqlPool,
+    pool: MySqlPool, // 连接池；Clone 成本低
 }
 
 impl MysqlStore {
+    /// 连接并执行建表迁移。
     pub async fn connect(database_url: &str) -> Result<Self> {
         let pool = MySqlPoolOptions::new()
             .max_connections(16)
@@ -30,8 +32,9 @@ impl MysqlStore {
         Ok(store)
     }
 
+    /// 幂等建表：entries（路径元数据）+ kv。
     async fn migrate(&self) -> Result<()> {
-        // sqlx MySQL does not run multi-statement batches by default.
+        // sqlx MySQL 默认不跑多语句批处理，故拆成两次 query
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS opens3_entries (
@@ -62,6 +65,7 @@ impl MysqlStore {
     }
 }
 
+/// 规范路径：绝对、去尾斜杠、折叠 `//`；空 → `/`。
 fn normalize(path: &str) -> String {
     if path.is_empty() {
         return "/".into();
@@ -82,7 +86,7 @@ fn normalize(path: &str) -> String {
 impl FilerStore for MysqlStore {
     async fn insert_entry(&self, path: &str, entry: &EntryMeta) -> Result<()> {
         let path = normalize(path);
-        // ensure parents
+        // 自下而上 INSERT IGNORE 补齐父目录
         let mut parent = parent_path(&path).to_string();
         while parent != "/" {
             let dir = EntryMeta::directory(base_name(&parent));
@@ -115,6 +119,7 @@ impl FilerStore for MysqlStore {
             .execute(&self.pool)
             .await
             .map_err(|e| Error::Internal(e.to_string()))?;
+        // rows_affected==0 表示主键冲突 → AlreadyExists
         if res.rows_affected() == 0 {
             return Err(Error::AlreadyExists(path));
         }
@@ -166,6 +171,7 @@ impl FilerStore for MysqlStore {
 
     async fn list_directory(&self, dir: &str) -> Result<Vec<EntryMeta>> {
         let dir = normalize(dir);
+        // LIKE 先粗筛前缀，再在应用层筛直接子项
         let rows = sqlx::query(
             "SELECT path, meta FROM opens3_entries WHERE path LIKE CONCAT(?, '/%')",
         )
@@ -177,7 +183,7 @@ impl FilerStore for MysqlStore {
         for r in rows {
             let p: String = r.get("path");
             if parent_path(&p) != dir {
-                continue;
+                continue; // 跳过更深层级
             }
             let v: serde_json::Value = r.get("meta");
             let mut e: EntryMeta =

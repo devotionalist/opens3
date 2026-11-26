@@ -1,8 +1,11 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
+//! 卷容量上限（VolumeFull）行为测试。
+
 use opens3_volume::store::VolumeStore;
 use tempfile::tempdir;
 
+/// 小 max_size 下第二次写入应失败
 #[test]
 fn second_write_fails_when_volume_full() {
     let dir = tempdir().unwrap();

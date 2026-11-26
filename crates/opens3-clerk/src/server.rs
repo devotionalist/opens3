@@ -1,5 +1,7 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
+//! Clerk HTTP 服务：集群 API、Raft RPC、heal/vacuum 后台循环。
+
 use crate::cluster::{AssignResult, ClusterState, VolumeReport, VolumeServerInfo};
 use crate::cluster::AssignPolicy;
 use crate::heal::{
@@ -29,32 +31,35 @@ use std::time::{Duration, Instant};
 use parking_lot::Mutex;
 use tracing::info;
 
+/// Clerk（Master）进程：拓扑、Raft、HTTP API 与后台编排任务。
 #[derive(Clone)]
 pub struct ClerkServer {
-    pub cluster: ClusterState,
-    pub raft: RaftLite,
-    pub port: u16,
-    pub peers: Vec<String>,
-    pub http: reqwest::Client,
+    pub cluster: ClusterState,                 // 内存拓扑
+    pub raft: RaftLite,                        // 共识门面
+    pub port: u16,                             // 监听端口
+    pub peers: Vec<String>,                    // 配置的 peer URL
+    pub http: reqwest::Client,                 // 访问 Volume 管理 API
     pub metrics: Arc<ClerkMetrics>,
-    /// Shared with volume servers; when set, assign responses include a write JWT.
+    /// 与 Volume 共享；设置后 assign 响应附带写 JWT。
     pub jwt_secret: Option<String>,
     pub tls: Option<opens3_common::tls::TlsConfig>,
-    /// Live heal job tracker (task list / current volume / progress).
+    /// 进行中的 heal 任务跟踪。
     pub heal: HealTracker,
-    /// Live vacuum job tracker (leader process).
+    /// 进行中的 vacuum 任务跟踪（Leader）。
     pub vacuum: VacuumTracker,
     pub vacuum_config: VacuumConfig,
-    /// Node ids currently running fingerprint reconcile after restart.
+    /// 重启后正在跑指纹 reconcile 的节点集合。
     pub reconciling: Arc<Mutex<HashSet<String>>>,
 }
 
+/// Axum 共享状态。
 #[derive(Clone)]
 struct AppState {
     clerk: ClerkServer,
 }
 
 impl ClerkServer {
+    /// 便捷构造（无 JWT / TLS）。
     pub async fn new(
         node_id: String,
         port: u16,
@@ -76,6 +81,7 @@ impl ClerkServer {
         .await
     }
 
+    /// 完整构造：打开 Raft、注册指标、加载 vacuum 配置。
     pub async fn new_with_opts(
         node_id: String,
         port: u16,
@@ -109,6 +115,7 @@ impl ClerkServer {
         })
     }
 
+    /// 刷新 Prometheus gauges（leader / 拓扑规模等）。
     fn refresh_gauges(&self) {
         let (vs, vc, size, files) = self.cluster.stats();
         self.metrics
@@ -127,6 +134,7 @@ impl ClerkServer {
             .set(self.cluster.under_replicated_count() as i64);
     }
 
+    /// 启动后台循环并监听 HTTP（可选 TLS）。
     pub async fn serve(self) -> anyhow::Result<()> {
         let addr: SocketAddr = format!("0.0.0.0:{}", self.port).parse()?;
         let cluster = self.cluster.clone();
@@ -214,9 +222,9 @@ impl ClerkServer {
             }
         });
 
-        // Leader periodically replicates topology when it changed.
-        // Do NOT propose on every volume heartbeat — full snapshots flood Raft
-        // and OOM on restart when logs are not compacted.
+        // Leader 周期性在拓扑变化时复制快照。
+        // 不要每个 volume 心跳都 propose — 全量快照会淹没 Raft，
+        // 且未压缩时重启重放会 OOM。
         let snap_master = self.clone();
         tokio::spawn(async move {
             let mut last_fp = String::new();
@@ -230,7 +238,7 @@ impl ClerkServer {
                 {
                     last_fp = fp;
                 }
-                // Compact Raft log so restart does not replay every topology write.
+                // 压缩 Raft 日志，避免重启重放每一次拓扑写。
                 snap_master.raft.trigger_snapshot().await;
             }
         });
@@ -283,6 +291,7 @@ impl ClerkServer {
     }
 }
 
+/// 就绪探针：Raft 已进入可服务角色。
 async fn ready(State(st): State<AppState>) -> impl IntoResponse {
     if st.clerk.raft.is_ready() {
         (StatusCode::OK, "ready")
@@ -291,6 +300,7 @@ async fn ready(State(st): State<AppState>) -> impl IntoResponse {
     }
 }
 
+/// Prometheus metrics 端点。
 async fn metrics(State(st): State<AppState>) -> impl IntoResponse {
     st.clerk.refresh_gauges();
     (
@@ -302,6 +312,7 @@ async fn metrics(State(st): State<AppState>) -> impl IntoResponse {
     )
 }
 
+/// 集群概览 JSON（leader、规模、策略、节点列表）。
 async fn cluster_status(State(st): State<AppState>) -> impl IntoResponse {
     let (vs, vc, size, files) = st.clerk.cluster.stats();
     let policy = st.clerk.cluster.assign_policy();
@@ -324,6 +335,7 @@ async fn cluster_status(State(st): State<AppState>) -> impl IntoResponse {
     }))
 }
 
+/// assign 策略及可选列表的 JSON。
 fn assign_policy_json(policy: AssignPolicy) -> serde_json::Value {
     serde_json::json!({
         "policy": policy.as_str(),
@@ -337,15 +349,18 @@ fn assign_policy_json(policy: AssignPolicy) -> serde_json::Value {
     })
 }
 
+/// GET 当前 assign 策略。
 async fn assign_policy_get(State(st): State<AppState>) -> impl IntoResponse {
     Json(assign_policy_json(st.clerk.cluster.assign_policy()))
 }
 
+/// 设置 assign 策略请求体。
 #[derive(Deserialize)]
 struct AssignPolicyBody {
-    policy: String,
+    policy: String, // random | round_robin | free_disk | least_size
 }
 
+/// POST 更新 assign 策略（仅 Leader；否则重定向）。
 async fn assign_policy_set(
     State(st): State<AppState>,
     OriginalUri(uri): OriginalUri,
@@ -365,6 +380,7 @@ async fn assign_policy_set(
     Json(assign_policy_json(policy)).into_response()
 }
 
+/// heal 带宽配置 JSON。
 fn heal_bandwidth_json(max_bps: u64) -> serde_json::Value {
     serde_json::json!({
         "max_bps": max_bps,
@@ -373,19 +389,21 @@ fn heal_bandwidth_json(max_bps: u64) -> serde_json::Value {
     })
 }
 
+/// GET heal/balance 限速。
 async fn heal_bandwidth_get(State(st): State<AppState>) -> impl IntoResponse {
     Json(heal_bandwidth_json(st.clerk.cluster.heal_max_bps()))
 }
 
+/// 设置 heal 带宽请求体。
 #[derive(Deserialize)]
 struct HealBandwidthBody {
-    /// Preferred: megabytes per second (`0` = unlimited).
+    /// 优先：兆字节/秒（`0` = 不限）。
     max_mbps: Option<f64>,
-    /// Alternate: bytes per second (`0` = unlimited).
+    /// 备选：字节/秒（`0` = 不限）。
     max_bps: Option<u64>,
 }
 
-/// Prefer `max_mbps` when both are present. `0` means unlimited.
+/// 两者都给时优先 `max_mbps`；`0` 表示不限速。
 fn parse_heal_max_bps(body: &HealBandwidthBody) -> Result<u64, String> {
     if let Some(mbps) = body.max_mbps {
         if mbps < 0.0 {
@@ -397,6 +415,7 @@ fn parse_heal_max_bps(body: &HealBandwidthBody) -> Result<u64, String> {
         .ok_or_else(|| "provide max_mbps or max_bps".into())
 }
 
+/// POST 更新 heal/balance 限速。
 async fn heal_bandwidth_set(
     State(st): State<AppState>,
     OriginalUri(uri): OriginalUri,
@@ -414,6 +433,7 @@ async fn heal_bandwidth_set(
     Json(heal_bandwidth_json(max_bps)).into_response()
 }
 
+/// 当前 Leader id / URL。
 async fn leader(State(st): State<AppState>) -> impl IntoResponse {
     Json(serde_json::json!({
         "leader": st.clerk.raft.leader(),
@@ -421,6 +441,7 @@ async fn leader(State(st): State<AppState>) -> impl IntoResponse {
     }))
 }
 
+/// 本节点 Raft 状态摘要。
 async fn raft_status(State(st): State<AppState>) -> impl IntoResponse {
     Json(serde_json::json!({
         "node_id": st.clerk.raft.node_name,
@@ -433,6 +454,7 @@ async fn raft_status(State(st): State<AppState>) -> impl IntoResponse {
     }))
 }
 
+/// openraft Vote RPC。
 async fn raft_vote(
     State(st): State<AppState>,
     Json(req): Json<VoteRequest<crate::raft::NodeId>>,
@@ -440,6 +462,7 @@ async fn raft_vote(
     Json(st.clerk.raft.raft.vote(req).await)
 }
 
+/// openraft AppendEntries RPC。
 async fn raft_append(
     State(st): State<AppState>,
     Json(req): Json<AppendEntriesRequest<TypeConfig>>,
@@ -447,6 +470,7 @@ async fn raft_append(
     Json(st.clerk.raft.raft.append_entries(req).await)
 }
 
+/// openraft InstallSnapshot RPC。
 async fn raft_snapshot(
     State(st): State<AppState>,
     Json(req): Json<InstallSnapshotRequest<TypeConfig>>,
@@ -454,6 +478,7 @@ async fn raft_snapshot(
     Json(st.clerk.raft.raft.install_snapshot(req).await)
 }
 
+/// Volume 心跳请求体。
 #[derive(Deserialize)]
 struct HeartbeatBody {
     node_id: String,
@@ -464,11 +489,10 @@ struct HeartbeatBody {
     rack: String,
     max_volume_count: u64,
     free_disk_bytes: u64,
-    /// Unique per Volume process start; change triggers fingerprint reconcile.
+    /// 每次 Volume 进程启动唯一；变化触发指纹 reconcile。
     #[serde(default)]
     boot_id: String,
-    /// Bootstrap intent (Helm / CLI). Honored on first registration and while
-    /// still offline with no replica_of (source may appear later).
+    /// Bootstrap 意图（Helm / CLI）。首次注册及仍 offline 且未配对时生效。
     #[serde(default)]
     online: Option<bool>,
     #[serde(default)]
@@ -477,6 +501,7 @@ struct HeartbeatBody {
     volumes: Vec<VolumeReport>,
 }
 
+/// 非 Leader：307 重定向到 Leader 同源路径。
 fn redirect_leader(st: &AppState, uri: &Uri) -> Response {
     let base = st.clerk.raft.leader_url();
     let base = base.trim_end_matches('/');
@@ -496,6 +521,7 @@ fn redirect_leader(st: &AppState, uri: &Uri) -> Response {
         .into_response()
 }
 
+/// Volume 心跳：更新拓扑、按需建卷、触发指纹追赶。
 async fn heartbeat(
     State(st): State<AppState>,
     OriginalUri(uri): OriginalUri,
@@ -520,7 +546,7 @@ async fn heartbeat(
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs(),
-        // Placeholder; cluster.heartbeat applies bootstrap online / replica_of.
+        // 占位；真实 online/replica_of 由 cluster.heartbeat bootstrap 处理。
         online: body.online.unwrap_or(false),
         replica_of: body
             .replica_of
@@ -543,8 +569,7 @@ async fn heartbeat(
         desired_online,
         desired_replica,
     );
-    // Only force a Raft propose when heartbeat asks to create volumes; otherwise
-    // the periodic snapshot loop covers follower sync.
+    // 仅在需要建卷时强制 Raft propose；其余由周期快照同步 follower。
     if !outcome.create.is_empty() {
         let _ = propose_cluster_snapshot(&st.clerk).await;
     }
@@ -576,14 +601,16 @@ async fn heartbeat(
     .into_response()
 }
 
+/// `/dir/assign` 查询参数。
 #[derive(Deserialize)]
 struct AssignQuery {
     collection: Option<String>,
-    replication: Option<String>,
+    replication: Option<String>, // XYZ 字符串
     count: Option<u32>,
-    ttl: Option<u64>,
+    ttl: Option<u64>,            // 秒
 }
 
+/// 分配 FileId（仅 Leader）。
 async fn assign(
     State(st): State<AppState>,
     OriginalUri(uri): OriginalUri,
@@ -636,6 +663,7 @@ async fn assign(
     }
 }
 
+/// 将 AssignResult 编成客户端 JSON；有 jwt_secret 时附带写 token。
 fn assign_json(st: &ClerkServer, a: AssignResult) -> serde_json::Value {
     let mut v = serde_json::json!({
         "fid": a.fid.fid(),
@@ -667,6 +695,7 @@ fn assign_json(st: &ClerkServer, a: AssignResult) -> serde_json::Value {
     v
 }
 
+/// 按 volume_id 查找位置。
 async fn lookup(State(st): State<AppState>, Path(volume_id): Path<u32>) -> impl IntoResponse {
     let t0 = Instant::now();
     match st.clerk.cluster.lookup(volume_id) {
@@ -710,12 +739,14 @@ async fn lookup(State(st): State<AppState>, Path(volume_id): Path<u32>) -> impl 
     }
 }
 
+/// 单卷上下线请求体。
 #[derive(Deserialize)]
 struct OnlineVolumeBody {
     volume_id: u32,
-    online: bool,
+    online: bool, // true=Writable，false=Offline
 }
 
+/// 单卷上下线。
 async fn set_volume_online(
     State(st): State<AppState>,
     OriginalUri(uri): OriginalUri,
@@ -740,12 +771,14 @@ async fn set_volume_online(
     }
 }
 
+/// 数据节点上下线请求体。
 #[derive(Deserialize)]
 struct OnlineServerBody {
     node_id: String,
     online: bool,
 }
 
+/// 数据节点上下线（卷跟随）。
 async fn set_server_online(
     State(st): State<AppState>,
     OriginalUri(uri): OriginalUri,
@@ -773,11 +806,13 @@ async fn set_server_online(
     }
 }
 
+/// 移除数据节点请求体。
 #[derive(Deserialize)]
 struct RemoveServerBody {
     node_id: String,
 }
 
+/// 从目录移除数据节点。
 async fn remove_server(
     State(st): State<AppState>,
     OriginalUri(uri): OriginalUri,
@@ -803,11 +838,13 @@ async fn remove_server(
     }
 }
 
+/// 列卷查询参数。
 #[derive(Deserialize)]
 struct ListQuery {
     collection: Option<String>,
 }
 
+/// 列出卷元数据。
 async fn list_volumes(State(st): State<AppState>, Query(q): Query<ListQuery>) -> impl IntoResponse {
     let vols = st
         .clerk
@@ -816,6 +853,7 @@ async fn list_volumes(State(st): State<AppState>, Query(q): Query<ListQuery>) ->
     Json(serde_json::json!({ "volumes": vols }))
 }
 
+/// 封印卷。
 async fn seal_volume(State(st): State<AppState>, Path(volume_id): Path<u32>) -> impl IntoResponse {
     match st.clerk.cluster.seal(volume_id) {
         Ok(()) => Json(serde_json::json!({"ok": true})).into_response(),
@@ -823,6 +861,7 @@ async fn seal_volume(State(st): State<AppState>, Path(volume_id): Path<u32>) -> 
     }
 }
 
+/// 标记卷为 EC。
 async fn mark_ec(State(st): State<AppState>, Path(volume_id): Path<u32>) -> impl IntoResponse {
     match st.clerk.cluster.mark_ec(volume_id) {
         Ok(()) => Json(serde_json::json!({"ok": true})).into_response(),
@@ -830,25 +869,28 @@ async fn mark_ec(State(st): State<AppState>, Path(volume_id): Path<u32>) -> impl
     }
 }
 
+/// 批量改复制策略请求体。
 #[derive(Deserialize)]
 struct SetReplicationBody {
-    /// XYZ code, e.g. "001" / "010" / "100" / "011"
+    /// XYZ，如 "001" / "010" / "100" / "011"
     replication: String,
-    /// Specific volume ids; empty + optional from = batch by current code
+    /// 指定卷；空且带 from = 按当前策略批量
     #[serde(default)]
     volume_ids: Vec<u32>,
-    /// Only volumes currently on this code (e.g. "000")
+    /// 仅当前为此码的卷（如 "000"）
     #[serde(default)]
     from: Option<String>,
-    /// After updating policy, run heal to copy missing replicas
+    /// 改策略后是否立刻 heal 补副本
     #[serde(default = "default_true")]
     heal: bool,
 }
 
+/// serde 缺省 true。
 fn default_true() -> bool {
     true
 }
 
+/// 更新卷复制策略，可选触发 heal。
 async fn set_replication(
     State(st): State<AppState>,
     OriginalUri(uri): OriginalUri,
@@ -902,20 +944,23 @@ async fn set_replication(
     .into_response()
 }
 
+/// 扩容空卷请求体。
 #[derive(Deserialize)]
 struct GrowBody {
     #[serde(default = "default_grow_count")]
     count: u32,
     #[serde(default)]
     collection: String,
-    /// XYZ; defaults to cluster default if omitted
+    /// XYZ；省略则用集群默认
     replication: Option<String>,
 }
 
+/// grow 默认创建 1 个卷。
 fn default_grow_count() -> u32 {
     1
 }
 
+/// Master 预留卷并请求各节点物化空文件。
 async fn grow_volumes(
     State(st): State<AppState>,
     OriginalUri(uri): OriginalUri,
@@ -938,7 +983,7 @@ async fn grow_volumes(
     {
         Ok(vols) => {
             let _ = propose_cluster_snapshot(&st.clerk).await;
-            // Ask primary volume servers to materialize empty volume files.
+            // 请求各 volume 节点物化空卷文件。
             let mut created_on = Vec::new();
             for v in &vols {
                 for loc in &v.locations {
@@ -990,10 +1035,12 @@ async fn grow_volumes(
     }
 }
 
+/// 当前 heal 运行状态。
 async fn heal_status(State(st): State<AppState>) -> impl IntoResponse {
     Json(st.clerk.heal.snapshot()).into_response()
 }
 
+/// vacuum 配置 + 运行状态。
 async fn vacuum_status(State(st): State<AppState>) -> impl IntoResponse {
     Json(serde_json::json!({
         "config": {
@@ -1007,12 +1054,14 @@ async fn vacuum_status(State(st): State<AppState>) -> impl IntoResponse {
     .into_response()
 }
 
+/// 手动 vacuum 查询参数。
 #[derive(Deserialize)]
 struct VacuumQuery {
-    threshold: Option<f64>,
-    volume_id: Option<u32>,
+    threshold: Option<f64>,  // 覆盖默认垃圾阈值
+    volume_id: Option<u32>,  // 仅处理该卷
 }
 
+/// 手动触发一轮 vacuum（异步后台）。
 async fn vacuum_now(
     State(st): State<AppState>,
     OriginalUri(uri): OriginalUri,
@@ -1082,6 +1131,7 @@ async fn vacuum_now(
     }
 }
 
+/// 手动触发一轮 heal（异步后台）。
 async fn heal_now(
     State(st): State<AppState>,
     OriginalUri(uri): OriginalUri,
@@ -1135,16 +1185,17 @@ async fn heal_now(
     }
 }
 
+/// 放置副本请求体。
 #[derive(Deserialize)]
 struct PlaceReplicasBody {
     source_node_id: String,
     target_node_id: String,
     #[serde(default = "default_true")]
-    heal: bool,
+    heal: bool, // 是否立即 heal 到 target
 }
 
-/// Place replicas of volumes on `source_node_id` onto `target_node_id`
-/// (bump XYZ when needed, then heal preferring the target).
+/// 将 `source_node_id` 上的卷副本放到 `target_node_id`
+///（必要时抬升 XYZ，再优先向 target heal）。
 async fn place_replicas(
     State(st): State<AppState>,
     OriginalUri(uri): OriginalUri,
@@ -1172,7 +1223,7 @@ async fn place_replicas(
                 .into_response();
         }
     };
-    // Persist pairing so Admin topology shows "B is replica of A" even before heal finishes.
+    // 先持久化配对，使 Admin 在 heal 完成前就能显示「B 是 A 的副本」。
     if let Err(e) = st.clerk.cluster.set_replica_of(&target, Some(&source)) {
         return (
             StatusCode::from_u16(e.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
@@ -1228,14 +1279,16 @@ async fn place_replicas(
     .into_response()
 }
 
+/// 设置 replica_of 请求体。
 #[derive(Deserialize)]
 struct ReplicaOfBody {
     node_id: String,
-    /// Empty / omit clears the pairing without touching volume data.
+    /// 空 / 省略则清除配对（不改卷数据）。
     #[serde(default)]
     replica_of: Option<String>,
 }
 
+/// 设置或清除节点 replica_of 配对。
 async fn set_replica_of_api(
     State(st): State<AppState>,
     OriginalUri(uri): OriginalUri,
@@ -1271,6 +1324,7 @@ async fn set_replica_of_api(
     }
 }
 
+/// 规划并执行一轮卷均衡。
 async fn balance_now(
     State(st): State<AppState>,
     OriginalUri(uri): OriginalUri,
@@ -1293,13 +1347,13 @@ async fn balance_now(
     Json(serde_json::json!({"planned": plan, "done": done})).into_response()
 }
 
+/// 无条件尝试 propose（内部用空 last_fp 强制写）。
 async fn propose_cluster_snapshot(master: &ClerkServer) -> anyhow::Result<()> {
     let _ = propose_cluster_snapshot_if_changed(master, "").await?;
     Ok(())
 }
 
-/// Propose a full cluster snapshot only when topology fingerprint changed.
-/// Returns `Some(fp)` when a new entry was written.
+/// 仅当拓扑指纹变化时 propose 全量集群快照；写入新条目时返回 `Some(fp)`。
 async fn propose_cluster_snapshot_if_changed(
     master: &ClerkServer,
     last_fp: &str,

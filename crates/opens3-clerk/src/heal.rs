@@ -1,6 +1,6 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
-//! Replica healing and volume balance orchestration (master side).
+//! 副本修复与卷均衡编排（Master 侧）。
 
 use crate::cluster::{ClusterState, VolumeFingerprint};
 use opens3_common::types::VolumeState;
@@ -12,22 +12,25 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
 
+/// Volume 节点 `/admin/volume_fp` 响应体。
 #[derive(Debug, Clone, Deserialize)]
 struct VolumeFpResp {
     #[serde(default)]
-    size: u64,
+    size: u64,          // 卷字节大小
     #[serde(default)]
-    file_count: u64,
+    file_count: u64,    // 存活文件数
     #[serde(default)]
-    deleted_count: u64,
+    deleted_count: u64, // 软删文件数
 }
 
 impl VolumeFpResp {
+    /// 转为集群侧指纹。
     fn fp(&self) -> VolumeFingerprint {
         VolumeFingerprint::new(self.size, self.file_count, self.deleted_count)
     }
 }
 
+/// 拉取某副本上指定卷的内容指纹；失败返回 None。
 async fn fetch_volume_fp(
     http: &reqwest::Client,
     base: &str,
@@ -57,16 +60,13 @@ async fn fetch_volume_fp(
     }
 }
 
-/// Max whole-volume catch-up rounds per volume while peers keep accepting writes.
+/// 对端持续写入时，单卷整卷追赶的最大轮数。
 const RECONCILE_CATCHUP_ROUNDS: usize = 5;
 
-/// After a volume node restart: compare fingerprints with peer replicas and
-/// whole-volume push from the largest replica onto the restarted node.
+/// Volume 节点重启后：与 peer 副本比对指纹，并从最大副本整卷推送到重启节点。
 ///
-/// **Degraded writes**: the restarted node stays `write_ready=false` (out of
-/// assign / sync fan-out) while catch-up runs; surviving replicas keep serving
-/// writes so a large delta does not stall the cluster. When catch-up finishes
-/// (or gives up), the node rejoins as `write_ready`.
+/// **降级写**：追赶期间重启节点保持 `write_ready=false`（不参与 assign / 同步扇出）；
+/// 存活副本继续承接写入，避免大 diff 卡住集群。追赶结束（或放弃）后重新 `write_ready`。
 pub async fn reconcile_node_fingerprints(
     http: &reqwest::Client,
     cluster: &ClusterState,
@@ -124,7 +124,7 @@ pub async fn reconcile_node_fingerprints(
             continue;
         }
 
-        // Source = largest peer (survivors kept writing during our downtime).
+        // 源 = 最大 peer（宕机期间存活副本持续写入）。
         peer_samples.sort_by(|a, b| {
             b.2.size
                 .cmp(&a.2.size)
@@ -166,7 +166,7 @@ pub async fn reconcile_node_fingerprints(
                     break;
                 }
             }
-            // Peer may have grown while we copied — refresh and retry if still behind.
+            // 拷贝期间 peer 可能又增长 — 刷新指纹，落后则再追一轮。
             let src_now = fetch_volume_fp(http, &src_url, v.id).await;
             let mine_now = fetch_volume_fp(http, &self_url, v.id).await;
             match (src_now, mine_now) {
@@ -199,7 +199,7 @@ pub async fn reconcile_node_fingerprints(
         }
     }
 
-    // Rejoin write path. Cluster was never fully stopped — only this node was excluded.
+    // 重新加入写路径。集群从未完全停写 — 仅本节点被排除。
     cluster.set_write_ready(node_id, true);
     if all_ok {
         info!(node = node_id, "fingerprint reconcile complete; write_ready");
@@ -211,6 +211,7 @@ pub async fn reconcile_node_fingerprints(
     }
 }
 
+/// Unix 秒时间戳。
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -218,50 +219,53 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
+/// 单条副本修复任务（计划 / 执行单元）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealTask {
-    // 修复任务
-    pub volume_id: u32,
-    pub missing_urls: Vec<String>, // 缺失URL
-    pub source_url: String,        // 源URL
+    pub volume_id: u32,            // 待修复卷
+    pub missing_urls: Vec<String>, // 缺失副本目标 URL
+    pub source_url: String,        // 源副本 URL
     #[serde(default)]
-    pub source_node: String,
+    pub source_node: String,       // 源节点 id
     #[serde(default)]
-    pub bytes_total: u64,
-    pub status: String, // planned | queued | running | ok | failed
+    pub bytes_total: u64,          // 预估总字节（进度用）
+    pub status: String,            // planned | queued | running | ok | failed
 }
 
+/// 对外展示的 heal 任务视图（含进度）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealTaskView {
     pub volume_id: u32,
     pub source_url: String,
     pub source_node: String,
-    pub targets: Vec<String>,
-    pub status: String,
-    pub progress_pct: f64,
+    pub targets: Vec<String>,           // 目标 URL 列表
+    pub status: String,                 // queued | running | ok | failed
+    pub progress_pct: f64,              // 0..=100
     pub bytes_total: u64,
-    pub bytes_copied: u64,
-    pub current_target: Option<String>,
-    pub message: String,
+    pub bytes_copied: u64,              // 按目标完成比例估算
+    pub current_target: Option<String>, // 当前正在拷贝的目标
+    pub message: String,                // 状态说明
 }
 
+/// 一次 heal 运行的全局状态快照。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealStatus {
-    pub running: bool,
-    pub run_id: u64,
-    pub started_at: u64,
-    pub finished_at: Option<u64>,
-    pub current_volume_id: Option<u32>,
+    pub running: bool,                           // 是否进行中
+    pub run_id: u64,                             // 运行序号
+    pub started_at: u64,                         // 开始 Unix 秒
+    pub finished_at: Option<u64>,                // 结束 Unix 秒
+    pub current_volume_id: Option<u32>,          // 当前卷
     pub current_source_node: Option<String>,
     pub current_source_url: Option<String>,
     pub current_target: Option<String>,
     pub tasks_total: usize,
-    pub tasks_done: usize,
+    pub tasks_done: usize,                       // ok|failed 计数
     pub overall_progress_pct: f64,
     pub tasks: Vec<HealTaskView>,
 }
 
 impl Default for HealStatus {
+    /// 空闲、无任务的默认状态。
     fn default() -> Self {
         Self {
             running: false,
@@ -280,22 +284,25 @@ impl Default for HealStatus {
     }
 }
 
-/// In-memory heal job tracker (leader process).
+/// 内存中的 heal 任务跟踪器（Leader 进程内）。
 #[derive(Clone, Default)]
 pub struct HealTracker {
     inner: Arc<RwLock<HealStatus>>,
-    next_run: Arc<AtomicU64>,
+    next_run: Arc<AtomicU64>, // 分配 run_id
 }
 
 impl HealTracker {
+    /// 新建空跟踪器。
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// 当前状态快照。
     pub fn snapshot(&self) -> HealStatus {
         self.inner.read().clone()
     }
 
+    /// 若空闲则开始新一轮；忙则返回当前状态 Err。
     pub fn try_begin(&self, tasks: &[HealTask]) -> Result<u64, HealStatus> {
         let mut g = self.inner.write();
         if g.running {
@@ -334,6 +341,7 @@ impl HealTracker {
         Ok(run_id)
     }
 
+    /// 按各任务进度重算整体进度与完成数。
     fn recompute(g: &mut HealStatus) {
         let n = g.tasks.len().max(1) as f64;
         let sum: f64 = g.tasks.iter().map(|t| t.progress_pct).sum();
@@ -345,6 +353,7 @@ impl HealTracker {
             .count();
     }
 
+    /// 标记任务为 running，并更新当前目标。
     pub fn set_task_running(&self, idx: usize, target: Option<&str>) {
         let mut g = self.inner.write();
         let cur = g.tasks.get_mut(idx).map(|t| {
@@ -369,6 +378,7 @@ impl HealTracker {
         Self::recompute(&mut g);
     }
 
+    /// 按已完成目标数更新任务进度（封顶 99%，完成态由 finish_task 置 100）。
     pub fn set_task_target_progress(&self, idx: usize, done_targets: usize, total_targets: usize) {
         let mut g = self.inner.write();
         if let Some(t) = g.tasks.get_mut(idx) {
@@ -381,6 +391,7 @@ impl HealTracker {
         Self::recompute(&mut g);
     }
 
+    /// 结束单个任务（ok / failed）。
     pub fn finish_task(&self, idx: usize, ok: bool, message: impl Into<String>) {
         let mut g = self.inner.write();
         if let Some(t) = g.tasks.get_mut(idx) {
@@ -395,6 +406,7 @@ impl HealTracker {
         Self::recompute(&mut g);
     }
 
+    /// 结束整轮 heal 运行。
     pub fn finish_run(&self) {
         let mut g = self.inner.write();
         g.running = false;
@@ -411,40 +423,37 @@ impl HealTracker {
     }
 }
 
+/// 卷均衡计划（若干次搬迁）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BalancePlan {
-    // 平衡计划
     pub moves: Vec<BalanceMove>,
 }
 
+/// 单次卷搬迁：从 from 复制到 to 后可 drop 源。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BalanceMove {
-    // 平衡移动
-    pub volume_id: u32, // 卷ID
-    pub from: String,   // 源URL
-    pub to: String,     // 目标URL
+    pub volume_id: u32, // 卷 ID
+    pub from: String,   // 源 URL
+    pub to: String,     // 目标 URL
 }
 
+/// 规划全量欠副本 heal 任务。
 pub fn plan_heal(cluster: &ClusterState) -> Vec<HealTask> {
-    // 计划修复
-    plan_heal_filtered(cluster, None, None) // 计划修复过滤
+    plan_heal_filtered(cluster, None, None)
 }
 
-/// When `only_ids` is Some, only those volume ids are considered.
-/// When `prefer_node_ids` is Some, missing replicas are placed only on those nodes
-/// (in listed order) before falling back to any other free server.
+/// 规划 heal 任务。
+/// `only_ids` 非空时只考虑这些卷；`prefer_node_ids` 非空时优先把缺失副本放到所列节点
+///（按顺序），且不再回落到其它空闲节点（pinned）。
 pub fn plan_heal_filtered(
-    // 计划修复过滤
-    cluster: &ClusterState,            // 集群
-    only_ids: Option<&[u32]>,          // 只考虑的卷ID
-    prefer_node_ids: Option<&[String]>, // 优先考虑的节点ID
+    cluster: &ClusterState,
+    only_ids: Option<&[u32]>,
+    prefer_node_ids: Option<&[String]>,
 ) -> Vec<HealTask> {
-    // 计划修复过滤
-    let mut tasks = Vec::new(); // 任务列表
+    let mut tasks = Vec::new();
     for v in cluster.list_volumes("") {
         if let Some(ids) = only_ids {
             if !ids.contains(&v.id) {
-                // 如果卷ID不在只考虑的卷ID列表中
                 continue;
             }
         }
@@ -463,7 +472,7 @@ pub fn plan_heal_filtered(
         let need = expected.saturating_sub(v.locations.len());
         let mut missing = Vec::new();
         let servers = cluster.servers();
-        // Always use live server URLs (volume.locations.url can be stale after Pod restart).
+        // 始终用存活 server URL（Pod 重启后 volume.locations.url 可能过期）。
         let live_url = |node_id: &str, fallback: &str| -> String {
             servers
                 .iter()
@@ -472,7 +481,7 @@ pub fn plan_heal_filtered(
                 .unwrap_or_else(|| fallback.to_string())
         };
         let source_url = live_url(&source.node_id, &source.url);
-        // Prefer explicit targets first (e.g. newly added replica node).
+        // 优先显式目标（如新加的 replica 节点）。
         let pinned = prefer_node_ids.map(|p| !p.is_empty()).unwrap_or(false);
         if let Some(prefs) = prefer_node_ids {
             for pid in prefs {
@@ -516,6 +525,7 @@ pub fn plan_heal_filtered(
     tasks
 }
 
+/// 构造 volume 侧 `replicate_volume` 请求 URL（可选限速）。
 fn replicate_volume_url(source: &str, volume_id: u32, target: &str, max_bps: u64) -> String {
     let base = source.trim_end_matches('/');
     if max_bps > 0 {
@@ -525,8 +535,8 @@ fn replicate_volume_url(source: &str, volume_id: u32, target: &str, max_bps: u64
     }
 }
 
-/// Run heal tasks while updating `tracker` (task list + current volume + progress).
-/// `max_bps` is forwarded to volume `replicate_volume` (`0` = unlimited).
+/// 执行 heal 任务并更新 `tracker`（任务列表 / 当前卷 / 进度）。
+/// `max_bps` 转发到 volume `replicate_volume`（`0` = 不限速）。
 pub async fn execute_heal(
     http: &reqwest::Client,
     tasks: &[HealTask],
@@ -588,15 +598,13 @@ pub async fn execute_heal(
     out
 }
 
-//
-// 计划平衡
+/// 按每节点卷数相对均值规划搬迁（过载 -> 欠载）。
 pub fn plan_balance(cluster: &ClusterState) -> BalancePlan {
-    // 计划平衡
     let servers = cluster.servers();
     if servers.len() < 2 {
         return BalancePlan { moves: vec![] };
     }
-    // count volumes per node
+    // 统计每节点承载的卷副本数
     let mut counts: HashMap<String, usize> = HashMap::new();
     for s in &servers {
         counts.insert(s.node_id.clone(), 0);
@@ -627,7 +635,7 @@ pub fn plan_balance(cluster: &ClusterState) -> BalancePlan {
             break;
         };
         let to_id = to.0.clone();
-        // pick a writable volume primarily on from
+        // 选一个主位置在 from 上的可读写卷
         if let Some(v) = volumes.iter().find(|v| {
             v.locations
                 .first()
@@ -656,8 +664,7 @@ pub fn plan_balance(cluster: &ClusterState) -> BalancePlan {
     BalancePlan { moves }
 }
 
-//
-// 执行平衡
+/// 执行均衡：复制成功后再 drop 源端卷。
 pub async fn execute_balance(
     http: &reqwest::Client,
     plan: &BalancePlan,
@@ -668,7 +675,7 @@ pub async fn execute_balance(
         let url = replicate_volume_url(&m.from, m.volume_id, &m.to, max_bps);
         match http.post(&url).send().await {
             Ok(resp) if resp.status().is_success() => {
-                // true move: drop source after successful replicate
+                // 真搬迁：复制成功后再删源
                 let drop_url = format!(
                     "{}/admin/drop_volume/{}",
                     m.from.trim_end_matches('/'),

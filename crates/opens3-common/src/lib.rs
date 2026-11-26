@@ -1,5 +1,7 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
+//! OpenS3 公共类型与工具库：错误、FileId、拓扑、复制策略、JWT、TLS、指标等。
+
 pub mod error;
 pub mod fileid;
 pub mod grpc_endpoint;

@@ -1,5 +1,7 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
+//! Blob 客户端：经 Clerk 分配卷，经 gRPC/HTTP 读写 Volume needle。
+
 use opens3_common::fileid::FileId;
 use opens3_common::types::{ChunkRef, DEFAULT_CHUNK_SIZE};
 use opens3_common::{volume_grpc_endpoint, util, Error, Result};
@@ -11,59 +13,65 @@ use std::sync::Arc;
 use std::time::Duration;
 use tonic::transport::Channel;
 
+/// 面向 Volume 的 blob 读写客户端（含 Clerk 领导钉扎）
 #[derive(Clone)]
 pub struct BlobClient {
     /// Active Clerk base URL. Updated when a non-leader returns 307 + leader_url
     /// so subsequent calls stick to the Raft leader instead of redirecting forever.
-    clerk: Arc<RwLock<String>>,
+    clerk: Arc<RwLock<String>>, // 当前钉扎的 Clerk 基址
     /// Extra Clerk URLs to try after failover (same idea as Volume `--clerk-peers`).
-    clerk_peers: Vec<String>,
+    clerk_peers: Vec<String>, // 备用 Clerk 列表
     /// Clerk HTTP client: redirects disabled so we can pin the leader ourselves.
-    pub http: reqwest::Client,
+    pub http: reqwest::Client, // Clerk HTTP（禁用自动重定向）
     /// Separate client for volume HTTP reads (may follow redirects).
-    volume_http: reqwest::Client,
-    pub default_replication: String,
-    pub chunk_size: u64,
+    volume_http: reqwest::Client, // Volume HTTP 读回退
+    pub default_replication: String, // 默认副本策略
+    pub chunk_size: u64,             // 分块大小（字节）
     /// When set, mint Bearer tokens for volume deletes (same secret as clerk/volume).
-    pub jwt_secret: Option<String>,
+    pub jwt_secret: Option<String>, // Volume JWT 密钥
     /// Cached gRPC channels keyed by endpoint (`http://host:18080`).
-    grpc: Arc<dashmap::DashMap<String, Channel>>,
+    grpc: Arc<dashmap::DashMap<String, Channel>>, // gRPC 通道缓存
 }
 
+/// Clerk `/dir/assign` 响应
 #[derive(Debug, Deserialize)]
 pub struct AssignResp {
     // 分配响应
-    pub fid: String, // 文件ID
-    pub url: String, // URL
+    pub fid: String, // 文件 ID（FileId 字符串）
+    pub url: String, // 主 Volume URL
     #[serde(default, rename = "publicUrl")]
-    pub public_url: String, // 公共URL
+    pub public_url: String, // 对外 URL（优先）
     #[serde(default)]
-    pub locations: Vec<Loc>, // 位置
+    pub locations: Vec<Loc>, // 全部副本位置
     /// Write token from clerk when volume JWT is enabled
     #[serde(default)]
     pub jwt: Option<String>, // 写入令牌
 }
 
+/// 单个 Volume 位置
 #[derive(Debug, Deserialize)]
 struct Loc {
     // 位置
-    url: String,
+    url: String, // 内网 URL
     #[serde(default, rename = "publicUrl")]
-    pub public_url: String, // 公共URL
+    pub public_url: String, // 公共 URL
 }
 
+/// Clerk `/dir/lookup` 响应
 #[derive(Debug, Deserialize)]
 struct LookupResp {
     // 查找响应
     #[serde(default)]
-    pub locations: Vec<Loc>, // 位置
+    pub locations: Vec<Loc>, // 卷位置列表
 }
 
 impl BlobClient {
+    /// 仅主 Clerk 地址时构造
     pub fn new(clerk: impl Into<String>, replication: impl Into<String>) -> Self {
         Self::new_with_peers(clerk, replication, Vec::<String>::new())
     }
 
+    /// 带 peer 列表构造；确保主 clerk 出现在候选列表首位
     pub fn new_with_peers(
         clerk: impl Into<String>,
         replication: impl Into<String>,
@@ -75,6 +83,7 @@ impl BlobClient {
             .map(|p| p.into())
             .filter(|p| !p.trim().is_empty())
             .collect();
+        // 保证当前 clerk 在候选中
         if !clerk_peers
             .iter()
             .any(|p| p.trim_end_matches('/') == clerk.trim_end_matches('/'))
@@ -97,6 +106,7 @@ impl BlobClient {
         }
     }
 
+    /// 设置 Volume JWT 签名密钥（链式）
     pub fn with_jwt_secret(mut self, secret: Option<String>) -> Self {
         self.jwt_secret = secret;
         self
@@ -107,6 +117,7 @@ impl BlobClient {
         self.clerk.read().clone()
     }
 
+    /// 钉扎新的 Clerk leader URL（变化时打日志）
     fn remember_clerk(&self, url: &str) {
         let u = url.trim_end_matches('/').to_string();
         if u.is_empty() {
@@ -119,6 +130,7 @@ impl BlobClient {
         }
     }
 
+    /// 候选 Clerk：当前钉扎 + peers（去重）
     fn clerk_candidates(&self) -> Vec<String> {
         let cur = self.clerk.read().clone();
         let mut out = vec![cur];
@@ -133,6 +145,7 @@ impl BlobClient {
         out
     }
 
+    /// 从 307 JSON 体提取 leader / leader_url
     fn extract_leader(v: &serde_json::Value) -> Option<String> {
         v.get("leader")
             .or_else(|| v.get("leader_url"))
@@ -149,6 +162,7 @@ impl BlobClient {
             let url = format!("{}/{}", base.trim_end_matches('/'), pq);
             match self.http.get(&url).send().await {
                 Ok(resp) if resp.status().as_u16() == 307 || resp.status().as_u16() == 308 => {
+                    // 非 leader：跟随一次并钉扎
                     let v: serde_json::Value = resp.json().await.unwrap_or_default();
                     let Some(lead) = Self::extract_leader(&v) else {
                         last_err = Error::Internal("clerk redirect without leader".into());
@@ -204,6 +218,7 @@ impl BlobClient {
                     self.remember_clerk(&lead);
                     let follow = format!("{lead}/{pq}");
                     match self.http.post(&follow).json(body).send().await {
+                        // 4xx 也返回给调用方自行处理
                         Ok(r) if r.status().is_success() || r.status().is_client_error() => {
                             self.remember_clerk(&lead);
                             return Ok(r);
@@ -231,6 +246,7 @@ impl BlobClient {
         Err(last_err)
     }
 
+    /// 获取或新建到 Volume gRPC 端点的通道
     async fn grpc_client(&self, http_url: &str) -> Result<VolumeServiceClient<Channel>> {
         let ep = volume_grpc_endpoint(http_url)
             .ok_or_else(|| Error::Internal(format!("bad volume url {http_url}")))?;
@@ -253,7 +269,7 @@ impl BlobClient {
         &self,
         collection: &str,
         replication: Option<&str>,
-        ttl: u64, // 过期时间
+        ttl: u64, // 过期时间（秒）
     ) -> Result<AssignResp> {
         let repl = replication.unwrap_or(&self.default_replication);
         let pq = format!(
@@ -288,6 +304,7 @@ impl BlobClient {
             .locations
             .into_iter()
             .map(|l| {
+                // 优先 publicUrl
                 if !l.public_url.is_empty() {
                     l.public_url
                 } else {
@@ -298,6 +315,7 @@ impl BlobClient {
             .collect())
     }
 
+    /// 从 AssignResp 提取写入目标 URL 列表
     fn loc_urls(a: &AssignResp) -> Vec<String> {
         if a.locations.is_empty() {
             vec![if !a.public_url.is_empty() {
@@ -355,13 +373,14 @@ impl BlobClient {
             .map_err(|e| Error::Internal(format!("grpc write {primary}: {e}")))?;
         let r = resp.into_inner();
         let etag = if r.etag.is_empty() {
-            util::md5_hex(data)
+            util::md5_hex(data) // Volume 未返回时本地算 MD5
         } else {
             r.etag
         };
         Ok((a.fid, etag))
     }
 
+    /// 按 fid 读 blob；多副本依次尝试
     pub async fn read_blob(&self, fid: &str) -> Result<Vec<u8>> {
         let file_id: FileId = fid.parse()?;
         let urls = self.lookup_urls(file_id.volume_id).await?;
@@ -419,6 +438,7 @@ impl BlobClient {
             }
         }
 
+        // HTTP 回退
         let url = format!("{}/{}", base.trim_end_matches('/'), fid);
         let resp = self
             .volume_http
@@ -438,9 +458,11 @@ impl BlobClient {
             .map_err(|e| Error::Internal(format!("http read body {url}: {e}")))
     }
 
+    /// 删除 fid：对各副本发 gRPC DeleteNeedle；任一成功即 Ok
     pub async fn delete_blob(&self, fid: &str) -> Result<()> {
         let file_id: FileId = fid.parse()?;
         let urls = self.lookup_urls(file_id.volume_id).await?;
+        // 可选：签发短期 write JWT
         let delete_tok = self.jwt_secret.as_deref().and_then(|secret| {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -495,6 +517,7 @@ impl BlobClient {
         replication: Option<&str>,
         ttl: u64,
     ) -> Result<(Vec<ChunkRef>, String, u64)> {
+        // 小于 chunk_size：单 blob
         if data.len() as u64 <= self.chunk_size {
             let (fid, etag) = self.write_blob(collection, data, replication, ttl).await?;
             return Ok((
@@ -526,7 +549,7 @@ impl BlobClient {
             offset = end as u64;
         }
         let etag = hex::encode(etag_hasher.finalize());
-        // meta-chunk if many chunks
+        // 超多 chunk 时写入 meta-chunk，etag 前缀 meta:
         if chunks.len() > 1000 {
             let meta = serde_json::to_vec(&chunks).map_err(|e| Error::Internal(e.to_string()))?;
             let (fid, _) = self.write_blob(collection, &meta, replication, ttl).await?;
@@ -546,6 +569,7 @@ impl BlobClient {
 
     /// Read a chunked blob from a volume and return its data.
     pub async fn read_chunked(&self, chunks: &[ChunkRef], file_id: Option<&str>) -> Result<Vec<u8>> {
+        // 无 chunks 时退化为单 fid
         if let Some(fid) = file_id {
             if chunks.is_empty() {
                 return self.read_blob(fid).await;
@@ -553,6 +577,7 @@ impl BlobClient {
         }
         let owned: Vec<ChunkRef>;
         let chunks = if chunks.len() == 1 && chunks[0].etag.starts_with("meta:") {
+            // 展开 meta-chunk
             let meta = self.read_blob(&chunks[0].file_id).await?;
             owned = serde_json::from_slice(&meta).map_err(|e| Error::Internal(e.to_string()))?;
             owned.as_slice()
@@ -568,6 +593,7 @@ impl BlobClient {
     }
 }
 
+/// RFC 3986 百分号编码（用于 assign query）
 fn urlencoding_encode(s: &str) -> String {
     s.chars()
         .map(|c| match c {

@@ -1,10 +1,12 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
 //! Fault-oriented: volume import after "loss" of a replica disk.
+//! 故障场景：主盘丢失后从副本导出字节恢复卷。
 
 use opens3_volume::store::VolumeStore;
 use tempfile::tempdir;
 
+/// 复制 dat/idx 到副本目录后，主盘删除仍可从副本读回
 #[test]
 fn recover_volume_from_exported_bytes() {
     let primary = tempdir().unwrap();

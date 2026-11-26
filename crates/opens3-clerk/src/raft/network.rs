@@ -1,6 +1,6 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
-//! HTTP transport for openraft RPCs (reqwest client).
+//! openraft RPC 的 HTTP 传输层（reqwest 客户端）。
 
 use openraft::error::{NetworkError, RPCError, RaftError, RemoteError, Unreachable};
 use openraft::network::{RPCOption, RaftNetwork, RaftNetworkFactory};
@@ -14,9 +14,11 @@ use serde::Serialize;
 
 use super::{NodeId, TypeConfig};
 
+/// Raft 网络工厂 / 共享 RPC 发送器（无状态）。
 pub struct Network {}
 
 impl Network {
+    /// 向对端 `target_node` 的 `{addr}/{uri}` POST JSON，并解析响应。
     pub async fn send_rpc<Req, Resp, Err>(
         &self,
         target: NodeId,
@@ -33,6 +35,7 @@ impl Network {
         let url = format!("{base}/{uri}");
         let client = reqwest::Client::new();
         let resp = client.post(&url).json(&req).send().await.map_err(|e| {
+            // 连接失败标为 Unreachable，便于 openraft 区分瞬态网络错误
             if e.is_connect() {
                 return RPCError::Unreachable(Unreachable::new(&e));
             }
@@ -51,6 +54,7 @@ impl Network {
 impl RaftNetworkFactory<TypeConfig> for Network {
     type Network = NetworkConnection;
 
+    /// 为对端节点创建 RPC 客户端。
     async fn new_client(&mut self, target: NodeId, node: &BasicNode) -> Self::Network {
         NetworkConnection {
             owner: Network {},
@@ -60,13 +64,15 @@ impl RaftNetworkFactory<TypeConfig> for Network {
     }
 }
 
+/// 指向单一 Raft peer 的连接句柄（由工厂按目标节点创建）。
 pub struct NetworkConnection {
-    owner: Network,
-    target: NodeId,
-    target_node: BasicNode,
+    owner: Network,           // 复用发送逻辑
+    target: NodeId,           // 对端 Raft NodeId
+    target_node: BasicNode,   // 对端 advertise 地址等
 }
 
 impl RaftNetwork<TypeConfig> for NetworkConnection {
+    /// AppendEntries RPC → `raft/append`。
     async fn append_entries(
         &mut self,
         req: AppendEntriesRequest<TypeConfig>,
@@ -77,6 +83,7 @@ impl RaftNetwork<TypeConfig> for NetworkConnection {
             .await
     }
 
+    /// InstallSnapshot RPC → `raft/snapshot`。
     async fn install_snapshot(
         &mut self,
         req: InstallSnapshotRequest<TypeConfig>,
@@ -90,6 +97,7 @@ impl RaftNetwork<TypeConfig> for NetworkConnection {
             .await
     }
 
+    /// Vote RPC → `raft/vote`。
     async fn vote(
         &mut self,
         req: VoteRequest<NodeId>,

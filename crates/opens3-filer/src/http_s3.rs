@@ -1,5 +1,6 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
+//! S3 兼容 API 与 Admin HTTP 路由实现。
 use crate::auth::payload_hash_from_headers;
 use crate::error_xml::s3_error_xml;
 use crate::lifecycle::parse_lifecycle_xml;
@@ -121,6 +122,7 @@ pub fn http_router() -> Router<AppState> {
         .route("/", any(dispatch))
 }
 
+// HeaderMap 转小写键 HashMap（鉴权用）
 fn headers_map(headers: &HeaderMap) -> HashMap<String, String> {
     let mut m = HashMap::new();
     for (k, v) in headers.iter() {
@@ -135,6 +137,7 @@ fn headers_map(headers: &HeaderMap) -> HashMap<String, String> {
     m
 }
 
+// 构造 application/xml 响应
 fn xml_response(status: StatusCode, body: String) -> Response {
     (
         status,
@@ -144,6 +147,7 @@ fn xml_response(status: StatusCode, body: String) -> Response {
         .into_response()
 }
 
+// 将 Error 转为 S3 错误 XML 响应
 fn err_response(err: opens3_common::Error, resource: &str) -> Response {
     let id = Uuid::new_v4().to_string();
     xml_response(
@@ -152,14 +156,17 @@ fn err_response(err: opens3_common::Error, resource: &str) -> Response {
     )
 }
 
+// 桶在 Filer 中的路径：/buckets/{bucket}
 fn bucket_path(bucket: &str) -> String {
     format!("/buckets/{bucket}")
 }
 
+// 对象路径：/buckets/{bucket}/{key}
 fn object_path(bucket: &str, key: &str) -> String {
     join_path(&bucket_path(bucket), key)
 }
 
+// S3 API 总入口：鉴权后按 method/query/path 分发
 async fn dispatch(
     State(st): State<AppState>,
     method: Method,
@@ -204,7 +211,7 @@ async fn dispatch(
         }
     };
 
-    // parse bucket / key
+    // 解析 bucket / key；根路径走 ListBuckets
     let trimmed = path.trim_start_matches('/');
     if trimmed.is_empty() {
         let resp = list_buckets(&st).await;
@@ -215,6 +222,7 @@ async fn dispatch(
         None => (trimmed.to_string(), String::new()),
     };
 
+    // 推断 IAM action（multipart / 桶级 / 对象级）
     let s3_action = if qmap.contains_key("uploads") && method == Method::POST {
         "s3:CreateMultipartUpload"
     } else if qmap.contains_key("uploadId") {
@@ -236,6 +244,7 @@ async fn dispatch(
             _ => "s3:*",
         }
     };
+    // 策略拒绝则 403
     if !st
         .server
         .policies
@@ -266,6 +275,7 @@ async fn dispatch(
         .with_label_values(&["in"])
         .inc_by(req_bytes);
 
+    // 桶级操作（无 key）按 query 子资源分发
     let resp = if key.is_empty() {
         match method {
             Method::PUT if qmap.contains_key("versioning") => {
@@ -328,8 +338,10 @@ async fn dispatch(
             ),
         }
     } else if qmap.contains_key("uploads") && method == Method::POST {
+        // 启动 multipart
         initiate_multipart(&st, &bucket, &key).await
     } else if let Some(upload_id) = qmap.get("uploadId") {
+        // 已有 uploadId：UploadPart / Complete / Abort / ListParts
         if method == Method::PUT {
             let part = qmap
                 .get("partNumber")
@@ -349,6 +361,7 @@ async fn dispatch(
             )
         }
     } else {
+        // 对象级 CRUD / 标签 / ACL / Copy
         match method {
             Method::PUT if qmap.contains_key("tagging") => {
                 put_object_tagging(&st, &bucket, &key, &body).await
@@ -415,13 +428,16 @@ async fn dispatch(
     )
 }
 
-struct InFlightGuard<'a>(&'a S3Metrics);
+// RAII：离开作用域时递减 in_flight 指标
+struct InFlightGuard<'a>(&'a S3Metrics); // 持有 S3Metrics 引用
 impl Drop for InFlightGuard<'_> {
+    /// 请求结束时递减 in_flight
     fn drop(&mut self) {
         self.0.in_flight.dec();
     }
 }
 
+// 记录 S3 请求指标（op/状态/字节/耗时）并返回响应
 fn finish_s3(
     st: &AppState,
     method: &str,
@@ -456,6 +472,7 @@ fn finish_s3(
     resp
 }
 
+// 解析 query string 为 map
 fn query_map(q: &str) -> HashMap<String, String> {
     let mut m = HashMap::new();
     for pair in q.split('&') {
@@ -470,6 +487,7 @@ fn query_map(q: &str) -> HashMap<String, String> {
     m
 }
 
+// 规范 query（排序后拼接，供 SigV4）
 fn canonical_query(q: &str) -> String {
     let mut pairs: Vec<(String, String)> = query_map(q).into_iter().collect();
     pairs.sort_by(|a, b| a.0.cmp(&b.0));
@@ -480,6 +498,7 @@ fn canonical_query(q: &str) -> String {
         .join("&")
 }
 
+// ListBuckets
 async fn list_buckets(st: &AppState) -> Response {
     let entries = match st.server.store.list_directory("/buckets").await {
         Ok(e) => e,
@@ -493,10 +512,12 @@ async fn list_buckets(st: &AppState) -> Response {
     xml_response(StatusCode::OK, list_buckets_xml(&buckets))
 }
 
+// 取路径最后一段作为名称
 fn base_name_owned(name: &str) -> String {
     name.rsplit('/').next().unwrap_or(name).to_string()
 }
 
+// CreateBucket（可带 ObjectLock/ACL）
 async fn create_bucket(
     st: &AppState,
     bucket: &str,
@@ -552,6 +573,7 @@ async fn create_bucket(
     }
 }
 
+// DeleteBucket
 async fn delete_bucket(st: &AppState, bucket: &str) -> Response {
     let path = bucket_path(bucket);
     let children = st.server.store.list_directory(&path).await.unwrap_or_default();
@@ -565,6 +587,7 @@ async fn delete_bucket(st: &AppState, bucket: &str) -> Response {
     StatusCode::NO_CONTENT.into_response()
 }
 
+// ListObjectsV2（含 delimiter/分页）
 async fn list_objects(st: &AppState, bucket: &str, q: &HashMap<String, String>) -> Response {
     let prefix = q.get("prefix").cloned().unwrap_or_default();
     let delimiter = q.get("delimiter").cloned().unwrap_or_default();
@@ -677,12 +700,15 @@ async fn list_objects(st: &AppState, bucket: &str, q: &HashMap<String, String>) 
     )
 }
 
+// 列举中间项：对象或公共前缀
+/// 列举中间项：对象内容或公共前缀
 enum ListItem<'a> {
-    Content(String, &'a EntryMeta),
-    Prefix(String),
+    Content(String, &'a EntryMeta), // (key, 元数据)
+    Prefix(String),                 // 公共前缀
 }
 
 impl ListItem<'_> {
+    /// 排序/分页用的 key
     fn key(&self) -> &str {
         match self {
             ListItem::Content(k, _) => k,
@@ -691,6 +717,7 @@ impl ListItem<'_> {
     }
 }
 
+// DeleteObjects 批量删除
 async fn delete_objects(st: &AppState, bucket: &str, body: &Bytes) -> Response {
     let keys = parse_delete_objects_xml(&String::from_utf8_lossy(body));
     let mut deleted = Vec::new();
@@ -718,37 +745,35 @@ async fn delete_objects(st: &AppState, bucket: &str, body: &Bytes) -> Response {
     )
 }
 
-/// Write bytes to a file and return its metadata.  
-async fn put_object(// 上传对象
-    st: &AppState, // 状态
-    bucket: &str, // 桶
-    key: &str, // 键
-    body: Bytes, // 数据
-    headers: &HashMap<String, String>, // 头
+/// PutObject：写对象并处理版本 / ObjectLock / SSE / ACL
+async fn put_object(
+    st: &AppState,
+    bucket: &str,
+    key: &str,
+    body: Bytes,
+    headers: &HashMap<String, String>,
 ) -> Response {
-    // 确保桶存在
-    let bpath = bucket_path(bucket); // 桶路径  
-    if st.server.store.find_entry(&bpath).await.ok().flatten().is_none() {  //
-        // 创建桶   
+    // 确保桶目录存在
+    let bpath = bucket_path(bucket);
+    if st.server.store.find_entry(&bpath).await.ok().flatten().is_none() {
         let _ = st
             .server
-                        .store
+            .store
             .insert_entry(&bpath, &EntryMeta::directory(bucket))
             .await;
     }
-    let path = object_path(bucket, key); // 对象路径    
-    // Object Lock: block overwrite of retained objects
-    if let Ok(Some(existing)) = st.server.store.find_entry(&path).await { // 查找对象
-        // 绕过对象锁
+    let path = object_path(bucket, key);
+    // Object Lock：保留期内禁止覆盖
+    if let Ok(Some(existing)) = st.server.store.find_entry(&path).await {
         let bypass = headers
             .get("x-amz-bypass-governance-retention")
             .map(|v| v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false); // 绕过对象锁
-        if let Err(e) = crate::lock::enforce_delete(&existing, bypass) { // 强制删除对象
+            .unwrap_or(false);
+        if let Err(e) = crate::lock::enforce_delete(&existing, bypass) {
             return err_response(e, &path);
         }
     }
-    let versioning = is_versioning_enabled(st, bucket).await; // 是否启用版本控制
+    let versioning = is_versioning_enabled(st, bucket).await;
     match st.server.put_bytes(&path, body.clone(), 0).await {
         Ok(mut entry) => {
             if versioning { // 启用版本控制
@@ -803,6 +828,7 @@ async fn put_object(// 上传对象
     }
 }
 
+// GetObject / HeadObject（支持 Range）
 async fn get_object(
     st: &AppState,
     bucket: &str,
@@ -878,6 +904,7 @@ async fn get_object(
     }
 }
 
+// DeleteObject（版本与 ObjectLock）
 async fn delete_object(
     st: &AppState,
     bucket: &str,
@@ -920,6 +947,7 @@ async fn delete_object(
     }
 }
 
+// CopyObject
 async fn copy_object(st: &AppState, bucket: &str, key: &str, copy_src: &str) -> Response {
     let src = copy_src.trim_start_matches('/');
     let (src_bucket, src_key) = src.split_once('/').unwrap_or((src, ""));
@@ -940,6 +968,7 @@ async fn copy_object(st: &AppState, bucket: &str, key: &str, copy_src: &str) -> 
     }
 }
 
+// InitiateMultipartUpload
 async fn initiate_multipart(st: &AppState, bucket: &str, key: &str) -> Response {
     let upload_id = Uuid::new_v4().to_string();
     let initiated = chrono::Utc::now().to_rfc3339();
@@ -963,6 +992,7 @@ async fn initiate_multipart(st: &AppState, bucket: &str, key: &str) -> Response 
     )
 }
 
+// 从 KV 读取 multipart 会话 JSON
 async fn multipart_get(st: &AppState, bucket: &str, upload_id: &str) -> Option<Vec<u8>> {
     let kv_key = crate::advanced::multipart_kv_key(bucket, upload_id);
     if let Ok(Some(raw)) = st.server.store.kv_get("multipart", &kv_key).await {
@@ -977,18 +1007,21 @@ async fn multipart_get(st: &AppState, bucket: &str, upload_id: &str) -> Option<V
         .flatten()
 }
 
+// 写入 multipart 会话到 KV
 async fn multipart_put(st: &AppState, bucket: &str, upload_id: &str, raw: &[u8]) {
     let kv_key = crate::advanced::multipart_kv_key(bucket, upload_id);
     let _ = st.server.store.kv_put("multipart", &kv_key, raw).await;
     let _ = st.server.store.kv_delete("multipart", upload_id).await;
 }
 
+// 删除 multipart 会话
 async fn multipart_del(st: &AppState, bucket: &str, upload_id: &str) {
     let kv_key = crate::advanced::multipart_kv_key(bucket, upload_id);
     let _ = st.server.store.kv_delete("multipart", &kv_key).await;
     let _ = st.server.store.kv_delete("multipart", upload_id).await;
 }
 
+// UploadPart
 async fn upload_part(
     st: &AppState,
     bucket: &str,
@@ -1013,6 +1046,7 @@ async fn upload_part(
     }
 }
 
+// CompleteMultipartUpload：合并分片
 async fn complete_multipart(
     st: &AppState,
     bucket: &str,
@@ -1069,6 +1103,7 @@ async fn complete_multipart(
     xml_response(StatusCode::OK, complete_multipart_xml(bucket, key, &etag))
 }
 
+// AbortMultipartUpload
 async fn abort_multipart(st: &AppState, bucket: &str, _key: &str, upload_id: &str) -> Response {
     if let Some(raw) = multipart_get(st, bucket, upload_id).await {
         if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&raw) {
@@ -1086,6 +1121,7 @@ async fn abort_multipart(st: &AppState, bucket: &str, _key: &str, upload_id: &st
     StatusCode::NO_CONTENT.into_response()
 }
 
+// ListMultipartUploads
 async fn list_multipart_uploads(
     st: &AppState,
     bucket: &str,
@@ -1134,6 +1170,7 @@ async fn list_multipart_uploads(
     )
 }
 
+// 桶是否启用版本控制
 async fn is_versioning_enabled(st: &AppState, bucket: &str) -> bool {
     st.server
                 .store
@@ -1145,11 +1182,13 @@ async fn is_versioning_enabled(st: &AppState, bucket: &str) -> bool {
         .unwrap_or(false)
 }
 
+// GetBucketVersioning
 async fn get_versioning(st: &AppState, bucket: &str) -> Response {
     let enabled = is_versioning_enabled(st, bucket).await;
     xml_response(StatusCode::OK, versioning_xml(enabled))
 }
 
+// PutBucketVersioning
 async fn put_versioning(st: &AppState, bucket: &str, body: &Bytes) -> Response {
     let text = String::from_utf8_lossy(body);
     let status = if text.contains("Enabled") {
@@ -1165,6 +1204,7 @@ async fn put_versioning(st: &AppState, bucket: &str, body: &Bytes) -> Response {
     StatusCode::OK.into_response()
 }
 
+// GetBucketLifecycleConfiguration
 async fn get_lifecycle(st: &AppState, bucket: &str) -> Response {
     if let Some(cfg) = st.server.lifecycles.read().get(bucket) {
         let days = cfg
@@ -1191,6 +1231,7 @@ async fn get_lifecycle(st: &AppState, bucket: &str) -> Response {
     )
 }
 
+// PutBucketLifecycleConfiguration
 async fn put_lifecycle(st: &AppState, bucket: &str, body: &Bytes) -> Response {
     let cfg = parse_lifecycle_xml(&String::from_utf8_lossy(body));
     if let Ok(bytes) = serde_json::to_vec(&cfg) {
@@ -1200,6 +1241,7 @@ async fn put_lifecycle(st: &AppState, bucket: &str, body: &Bytes) -> Response {
     StatusCode::OK.into_response()
 }
 
+// GetBucketPolicy
 async fn get_bucket_policy(st: &AppState, bucket: &str) -> Response {
     match st.server.policies.read().bucket_policies.get(bucket) {
         Some(p) => (
@@ -1215,6 +1257,7 @@ async fn get_bucket_policy(st: &AppState, bucket: &str) -> Response {
     }
 }
 
+// PutBucketPolicy
 async fn put_bucket_policy(st: &AppState, bucket: &str, body: &Bytes) -> Response {
     match serde_json::from_slice::<crate::policy::PolicyDocument>(body) {
         Ok(doc) => {
@@ -1235,6 +1278,7 @@ async fn put_bucket_policy(st: &AppState, bucket: &str, body: &Bytes) -> Respons
     }
 }
 
+// Admin 静态 UI HTML
 async fn admin_ui() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -1242,6 +1286,7 @@ async fn admin_ui() -> impl IntoResponse {
     )
 }
 
+// Admin 状态 JSON
 async fn admin_status(State(st): State<AppState>) -> impl IntoResponse {
     axum::Json(serde_json::json!({
         "service": "opens3-s3",
@@ -1251,6 +1296,7 @@ async fn admin_status(State(st): State<AppState>) -> impl IntoResponse {
     }))
 }
 
+// Admin：列出桶
 async fn admin_list_buckets(State(st): State<AppState>) -> impl IntoResponse {
     let entries = st
         .server
@@ -1266,6 +1312,7 @@ async fn admin_list_buckets(State(st): State<AppState>) -> impl IntoResponse {
     axum::Json(serde_json::json!({ "buckets": buckets }))
 }
 
+// Admin：创建桶
 async fn admin_create_bucket(
     State(st): State<AppState>,
     Path(bucket): Path<String>,
@@ -1293,6 +1340,7 @@ async fn admin_create_bucket(
     }
 }
 
+// Admin：删除桶
 async fn admin_delete_bucket(
     State(st): State<AppState>,
     Path(bucket): Path<String>,
@@ -1315,19 +1363,22 @@ async fn admin_delete_bucket(
     StatusCode::NO_CONTENT.into_response()
 }
 
+// Admin 列对象查询参数
 #[derive(Deserialize)]
 struct AdminListQuery {
-    bucket: String,
+    bucket: String, // 桶名
     #[serde(default)]
-    prefix: String,
+    prefix: String, // 前缀
     #[serde(default = "default_delimiter")]
-    delimiter: String,
+    delimiter: String, // 分隔符
 }
 
+// serde 默认 delimiter 为 `/`
 fn default_delimiter() -> String {
     "/".into()
 }
 
+// Admin：列对象（模拟 ListObjectsV2）
 async fn admin_list_objects(
     State(st): State<AppState>,
     Query(q): Query<AdminListQuery>,
@@ -1401,12 +1452,14 @@ async fn admin_list_objects(
     }))
 }
 
+// Admin 单对象操作查询（bucket/key）
 #[derive(Deserialize)]
 struct AdminObjectQuery {
-    bucket: String,
-    key: String,
+    bucket: String, // 桶名
+    key: String, // 对象键
 }
 
+// Admin：下载对象
 async fn admin_get_object(
     State(st): State<AppState>,
     Query(q): Query<AdminObjectQuery>,
@@ -1443,6 +1496,7 @@ async fn admin_get_object(
     }
 }
 
+// Admin：上传对象
 async fn admin_put_object(
     State(st): State<AppState>,
     Query(q): Query<AdminObjectQuery>,
@@ -1511,6 +1565,7 @@ async fn admin_put_object(
     }
 }
 
+// Admin：删除对象
 async fn admin_delete_object(
     State(st): State<AppState>,
     Query(q): Query<AdminObjectQuery>,
@@ -1553,22 +1608,26 @@ async fn admin_delete_object(
     }
 }
 
+// Admin 注册 webhook 请求
 #[derive(Deserialize)]
 struct WebhookReq {
-    url: String,
+    url: String, // webhook URL
 }
 
+// Admin：注册事件 webhook
 async fn admin_webhook(State(st): State<AppState>, axum::Json(body): axum::Json<WebhookReq>) -> impl IntoResponse {
     st.server.events.add_webhook(body.url);
     axum::Json(serde_json::json!({"ok": true}))
 }
 
+// Admin 复制请求
 #[derive(Deserialize)]
 struct ReplicateReq {
-    prefix: String,
-    target_filer: String,
+    prefix: String, // 源前缀
+    target_filer: String, // 目标 Filer
 }
 
+// Admin：触发跨 Filer 复制
 async fn admin_replicate(
     State(st): State<AppState>,
     axum::Json(body): axum::Json<ReplicateReq>,
@@ -1601,11 +1660,13 @@ async fn admin_replicate(
     axum::Json(serde_json::json!({"ok": ok, "fail": fail}))
 }
 
+/// 版本控制配置占位类型
 #[derive(Deserialize)]
 pub struct PutBucketVersioning {
-    pub status: Option<String>,
+    pub status: Option<String>, // Enabled / Suspended
 }
 
+// ListObjectVersions
 async fn list_object_versions(
     st: &AppState,
     bucket: &str,
@@ -1646,6 +1707,7 @@ async fn list_object_versions(
     )
 }
 
+// ListParts
 async fn list_parts(st: &AppState, bucket: &str, key: &str, upload_id: &str) -> Response {
     let mut parts = Vec::new();
     if let Some(raw) = multipart_get(st, bucket, upload_id).await {
@@ -1672,6 +1734,7 @@ async fn list_parts(st: &AppState, bucket: &str, key: &str, upload_id: &str) -> 
     )
 }
 
+// PutBucketCors
 async fn put_bucket_cors(st: &AppState, bucket: &str, body: &Bytes) -> Response {
     // Accept either JSON array of origins or XML with AllowedOrigin
     let text = String::from_utf8_lossy(body);
@@ -1691,6 +1754,7 @@ async fn put_bucket_cors(st: &AppState, bucket: &str, body: &Bytes) -> Response 
     StatusCode::OK.into_response()
 }
 
+// GetBucketCors
 async fn get_bucket_cors(st: &AppState, bucket: &str) -> Response {
     let raw = st
         .server
@@ -1706,11 +1770,13 @@ async fn get_bucket_cors(st: &AppState, bucket: &str) -> Response {
     )
 }
 
+// PutBucketTagging
 async fn put_bucket_tagging(st: &AppState, bucket: &str, body: &Bytes) -> Response {
     let _ = st.server.store.kv_put("btag", bucket, body).await;
     StatusCode::OK.into_response()
 }
 
+// GetBucketTagging
 async fn get_bucket_tagging(st: &AppState, bucket: &str) -> Response {
     let tags = parse_tagging_xml(
         &String::from_utf8_lossy(
@@ -1726,12 +1792,14 @@ async fn get_bucket_tagging(st: &AppState, bucket: &str) -> Response {
     xml_response(StatusCode::OK, crate::advanced::tagging_xml(&tags))
 }
 
+// PutObjectTagging
 async fn put_object_tagging(st: &AppState, bucket: &str, key: &str, body: &Bytes) -> Response {
     let k = format!("{bucket}/{key}");
     let _ = st.server.store.kv_put("otag", &k, body).await;
     StatusCode::OK.into_response()
 }
 
+// GetObjectTagging
 async fn get_object_tagging(st: &AppState, bucket: &str, key: &str) -> Response {
     let k = format!("{bucket}/{key}");
     let tags = parse_tagging_xml(
@@ -1748,6 +1816,7 @@ async fn get_object_tagging(st: &AppState, bucket: &str, key: &str) -> Response 
     xml_response(StatusCode::OK, crate::advanced::tagging_xml(&tags))
 }
 
+// PutObjectLockConfiguration
 async fn put_object_lock(st: &AppState, bucket: &str, body: &Bytes) -> Response {
     let cfg = crate::lock::ObjectLockConfig::from_xml(&String::from_utf8_lossy(body));
     let _ = st
@@ -1769,6 +1838,7 @@ async fn put_object_lock(st: &AppState, bucket: &str, body: &Bytes) -> Response 
     StatusCode::OK.into_response()
 }
 
+// GetObjectLockConfiguration
 async fn get_object_lock(st: &AppState, bucket: &str) -> Response {
     match load_lock_config(st, bucket).await {
         Some(cfg) => xml_response(StatusCode::OK, cfg.to_xml()),
@@ -1779,6 +1849,7 @@ async fn get_object_lock(st: &AppState, bucket: &str) -> Response {
     }
 }
 
+// 从 KV 加载桶 ObjectLock 配置
 async fn load_lock_config(st: &AppState, bucket: &str) -> Option<crate::lock::ObjectLockConfig> {
     let raw = st.server.store.kv_get("lock", bucket).await.ok().flatten()?;
     if let Ok(cfg) = serde_json::from_slice::<crate::lock::ObjectLockConfig>(&raw) {
@@ -1790,6 +1861,7 @@ async fn load_lock_config(st: &AppState, bucket: &str) -> Option<crate::lock::Ob
     ))
 }
 
+// 将 SSE 请求头写入 EntryMeta
 fn apply_sse_headers_to_entry(
     st: &AppState,
     entry: &mut EntryMeta,
@@ -1833,6 +1905,7 @@ fn apply_sse_headers_to_entry(
     }
 }
 
+// 响应中注入 SSE 相关头
 fn inject_sse_response_headers(resp: &mut Response, entry: &EntryMeta) {
     if let Some(sse) = entry.user_metadata.get("x-amz-server-side-encryption") {
         if let Ok(hv) = axum::http::HeaderValue::from_str(sse) {
@@ -1851,6 +1924,7 @@ fn inject_sse_response_headers(resp: &mut Response, entry: &EntryMeta) {
     }
 }
 
+// PutBucketAcl
 async fn put_bucket_acl(
     st: &AppState,
     bucket: &str,
@@ -1870,6 +1944,7 @@ async fn put_bucket_acl(
     StatusCode::OK.into_response()
 }
 
+// GetBucketAcl
 async fn get_bucket_acl(st: &AppState, bucket: &str) -> Response {
     let canned = st
         .server
@@ -1883,6 +1958,7 @@ async fn get_bucket_acl(st: &AppState, bucket: &str) -> Response {
     xml_response(StatusCode::OK, crate::acl::acl_xml("opens3", &canned))
 }
 
+// PutObjectAcl
 async fn put_object_acl(
     st: &AppState,
     bucket: &str,
@@ -1907,6 +1983,7 @@ async fn put_object_acl(
     StatusCode::OK.into_response()
 }
 
+// GetObjectAcl
 async fn get_object_acl(st: &AppState, bucket: &str, key: &str) -> Response {
     let canned = st
         .server
@@ -1920,6 +1997,7 @@ async fn get_object_acl(st: &AppState, bucket: &str, key: &str) -> Response {
     xml_response(StatusCode::OK, crate::acl::acl_xml("opens3", &canned))
 }
 
+// 从 Tagging XML 刮取 Key/Value 对
 fn parse_tagging_xml(body: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut rest = body;

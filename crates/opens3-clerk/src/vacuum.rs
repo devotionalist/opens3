@@ -1,6 +1,6 @@
 // Copyright 2026 OpenS3 Contributors
 // SPDX-License-Identifier: Apache-2.0
-//! Clerk-side vacuum orchestration (SeaweedFS-style Check→Compact→Commit→Cleanup).
+//! Clerk 侧 vacuum 编排（SeaweedFS 风格：Check→Compact→Commit→Cleanup）。
 
 use crate::cluster::ClusterState;
 use opens3_common::types::VolumeState;
@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
 
+/// Unix 秒时间戳。
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -18,16 +19,17 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-/// Runtime knobs (env overrides at Clerk start).
+/// 运行时旋钮（Clerk 启动时可由环境变量覆盖）。
 #[derive(Debug, Clone)]
 pub struct VacuumConfig {
-    pub enabled: bool,
-    pub interval_secs: u64,
-    pub garbage_threshold: f64,
-    pub max_parallel_volumes: usize,
+    pub enabled: bool,               // 是否启用周期 vacuum
+    pub interval_secs: u64,          // 扫描间隔（秒）
+    pub garbage_threshold: f64,      // 垃圾比例阈值 0..=1
+    pub max_parallel_volumes: usize, // 并行卷数上限（预留）
 }
 
 impl Default for VacuumConfig {
+    /// 启用、60s 间隔、30% 阈值、串行。
     fn default() -> Self {
         Self {
             enabled: true,
@@ -39,6 +41,7 @@ impl Default for VacuumConfig {
 }
 
 impl VacuumConfig {
+    /// 从 `OPENS3_VACUUM_*` 环境变量加载，非法值保留默认。
     pub fn from_env() -> Self {
         let mut c = Self::default();
         if let Ok(v) = std::env::var("OPENS3_VACUUM_ENABLED") {
@@ -68,25 +71,28 @@ impl VacuumConfig {
     }
 }
 
+/// 单卷 vacuum 任务。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VacuumTask {
     pub volume_id: u32,
-    pub locations: Vec<String>,
-    pub estimated_garbage_ratio: f64,
-    pub status: String,
+    pub locations: Vec<String>,        // 各副本 URL
+    pub estimated_garbage_ratio: f64,  // 心跳估算垃圾比
+    pub status: String,                // planned | queued | running | ok | failed | skipped
 }
 
+/// 对外展示的 vacuum 任务视图。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VacuumTaskView {
     pub volume_id: u32,
     pub locations: Vec<String>,
     pub estimated_garbage_ratio: f64,
     pub status: String,
-    pub progress_pct: f64,
-    pub current_url: Option<String>,
+    pub progress_pct: f64,             // 按副本完成比例
+    pub current_url: Option<String>,   // 当前操作的副本
     pub message: String,
 }
 
+/// 一轮 vacuum 运行状态。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VacuumStatus {
     pub running: bool,
@@ -98,11 +104,12 @@ pub struct VacuumStatus {
     pub tasks_total: usize,
     pub tasks_done: usize,
     pub overall_progress_pct: f64,
-    pub threshold: f64,
+    pub threshold: f64,                // 本轮使用的阈值
     pub tasks: Vec<VacuumTaskView>,
 }
 
 impl Default for VacuumStatus {
+    /// 空闲默认状态。
     fn default() -> Self {
         Self {
             running: false,
@@ -120,6 +127,7 @@ impl Default for VacuumStatus {
     }
 }
 
+/// 内存中的 vacuum 任务跟踪器（Leader 进程）。
 #[derive(Clone, Default)]
 pub struct VacuumTracker {
     inner: Arc<RwLock<VacuumStatus>>,
@@ -127,14 +135,17 @@ pub struct VacuumTracker {
 }
 
 impl VacuumTracker {
+    /// 新建空跟踪器。
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// 当前状态快照。
     pub fn snapshot(&self) -> VacuumStatus {
         self.inner.read().clone()
     }
 
+    /// 若空闲则开始新一轮；忙则 Err(当前状态)。
     pub fn try_begin(&self, tasks: &[VacuumTask], threshold: f64) -> Result<u64, VacuumStatus> {
         let mut g = self.inner.write();
         if g.running {
@@ -169,6 +180,7 @@ impl VacuumTracker {
         Ok(run_id)
     }
 
+    /// 标记任务 running 并记录当前 URL。
     fn set_task_running(&self, idx: usize, url: Option<&str>) {
         let mut g = self.inner.write();
         let volume_id = g.tasks.get(idx).map(|t| t.volume_id);
@@ -180,6 +192,7 @@ impl VacuumTracker {
         g.current_url = url.map(|s| s.to_string());
     }
 
+    /// 按已完成副本数更新任务与整体进度。
     fn set_task_progress(&self, idx: usize, locs_done: usize, locs_total: usize) {
         let mut g = self.inner.write();
         if let Some(t) = g.tasks.get_mut(idx) {
@@ -197,6 +210,7 @@ impl VacuumTracker {
         g.overall_progress_pct = sum / n;
     }
 
+    /// 结束单个任务（ok / failed / skipped）。
     fn finish_task(&self, idx: usize, status: &str, message: impl Into<String>) {
         let mut g = self.inner.write();
         if let Some(t) = g.tasks.get_mut(idx) {
@@ -218,6 +232,7 @@ impl VacuumTracker {
         g.overall_progress_pct = sum / n;
     }
 
+    /// 结束整轮 vacuum。
     fn finish_run(&self) {
         let mut g = self.inner.write();
         g.running = false;
@@ -228,6 +243,7 @@ impl VacuumTracker {
     }
 }
 
+/// 垃圾比例：deleted / (live + deleted)；空卷为 0。
 fn estimated_ratio(file_count: u64, deleted_count: u64) -> f64 {
     let total = file_count.saturating_add(deleted_count);
     if total == 0 {
@@ -237,11 +253,12 @@ fn estimated_ratio(file_count: u64, deleted_count: u64) -> f64 {
     }
 }
 
-/// Plan volumes whose heartbeat stats suggest enough garbage.
+/// 规划心跳统计显示垃圾足够多的卷。
 pub fn plan_vacuum(cluster: &ClusterState, threshold: f64) -> Vec<VacuumTask> {
     plan_vacuum_filtered(cluster, threshold, None)
 }
 
+/// 规划 vacuum；`only_ids` 非空时只考虑这些卷。按垃圾比降序。
 pub fn plan_vacuum_filtered(
     cluster: &ClusterState,
     threshold: f64,
@@ -298,12 +315,14 @@ pub fn plan_vacuum_filtered(
     tasks
 }
 
+/// Volume `/admin/vacuum/.../check` 响应。
 #[derive(Debug, Deserialize)]
 struct CheckResp {
     #[serde(default)]
-    garbage_ratio: f64,
+    garbage_ratio: f64, // 实测垃圾比
 }
 
+/// POST 且要求 2xx，否则返回可读错误串。
 async fn post_json(
     http: &reqwest::Client,
     url: &str,
@@ -315,6 +334,7 @@ async fn post_json(
     }
 }
 
+/// 对单副本依次 Compact→Commit→Cleanup。
 async fn vacuum_one_replica(
     http: &reqwest::Client,
     base: &str,
@@ -327,7 +347,7 @@ async fn vacuum_one_replica(
     Ok(())
 }
 
-/// Run vacuum tasks; updates tracker when provided.
+/// 执行 vacuum 任务；提供 tracker 时更新进度。
 pub async fn execute_vacuum(
     http: &reqwest::Client,
     tasks: &[VacuumTask],
@@ -348,7 +368,7 @@ pub async fn execute_vacuum(
             if let Some(tr) = tracker {
                 tr.set_task_running(idx, Some(url.as_str()));
             }
-            // Re-check ratio via HTTP; vacuum_one_replica no-ops if below threshold.
+            // HTTP 再确认比例；低于阈值则跳过该副本。
             let before = http
                 .post(format!(
                     "{}/admin/vacuum/{}/check",
